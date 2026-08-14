@@ -1,4 +1,9 @@
+#include "state.hpp"
 #include <iostream>
-const int& config(){ static const int value=42; return value; } // BP: first-use initialization is thread-safe.
-int main(){ std::cout<<config()<<'\n'; }
-
+int main() {
+#if defined(RUN_UNSAFE_EXAMPLE)
+    std::cout << "cross-TU copied value=" << copied_during_static_initialization << '\n'; // BP: link order may matter.
+#else
+    std::cout << "first-use value=" << safe_configuration().value << '\n';
+#endif
+}

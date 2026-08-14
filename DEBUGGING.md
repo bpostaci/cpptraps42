@@ -1,6 +1,6 @@
 # Visual Studio Debugging Map
 
-Every project has one `main.cpp`. Search that file for `BP:` and set a breakpoint on each marked line. Start with safe mode; enable `RUN_UNSAFE_EXAMPLE` only for the project currently being studied.
+Every project has one `main.cpp`; advanced build examples may also contain supporting translation units. Search the project for `BP:` and set a breakpoint on each marked line. Start with the normal target. When an `_unsafe` sibling exists, use it only for the intentionally invalid path and pair it with the relevant sanitizer. CMake supplies `RUN_UNSAFE_EXAMPLE`; do not define it manually.
 
 ## Memory
 
@@ -36,4 +36,3 @@ Every project has one `main.cpp`. Search that file for `BP:` and set a breakpoin
 | signed overflow, misalignment | UndefinedBehaviorSanitizer (Clang) |
 | data race | ThreadSanitizer (Clang/Linux or WSL) |
 | uninitialized value | compiler warnings / MemorySanitizer where supported |
-

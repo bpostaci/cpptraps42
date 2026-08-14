@@ -1,9 +1,15 @@
-#include <cstddef>
+#include "layout.hpp"
 #include <cstdint>
 #include <iostream>
-struct WireMessage { std::uint32_t version; std::uint32_t size; std::uint64_t request_id; };
-int main(){ WireMessage m{1,16,9001}; // BP: compare size/alignment/offsets on both ABI sides.
-    std::cout<<sizeof(m)<<' '<<alignof(WireMessage)<<' '<<offsetof(WireMessage,request_id)<<'\n';
-    // A true wire format must additionally specify byte order and serialization.
+struct ConsumerMessage { std::uint32_t version; std::uint64_t request_id; };
+Layout consumer_layout() {
+    return {sizeof(ConsumerMessage), alignof(ConsumerMessage), offsetof(ConsumerMessage, request_id)};
 }
-
+int main() {
+    const Layout producer = producer_layout();
+    const Layout consumer = consumer_layout();
+    std::cout << "producer: size=" << producer.size << " align=" << producer.alignment
+              << " id-offset=" << producer.id_offset << '\n';
+    std::cout << "consumer: size=" << consumer.size << " align=" << consumer.alignment
+              << " id-offset=" << consumer.id_offset << '\n'; // BP: layouts disagree across boundary.
+}

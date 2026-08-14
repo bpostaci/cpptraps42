@@ -1,0 +1,26 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "msvc-debug",
+      "displayName": "MSVC Debug - safe examples",
+      "binaryDir": "${sourceDir}/build/msvc-debug",
+      "cacheVariables": { "TRAPS_BUILD_UNSAFE": "OFF", "TRAPS_SANITIZER": "none" }
+    },
+    {
+      "name": "msvc-asan-unsafe",
+      "displayName": "MSVC AddressSanitizer - safe and unsafe pairs",
+      "inherits": "msvc-debug",
+      "binaryDir": "${sourceDir}/build/msvc-asan-unsafe",
+      "cacheVariables": { "TRAPS_BUILD_UNSAFE": "ON", "TRAPS_SANITIZER": "address" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "build-safe", "configurePreset": "msvc-debug", "configuration": "Debug" },
+    { "name": "build-asan-unsafe", "configurePreset": "msvc-asan-unsafe", "configuration": "Debug" }
+  ],
+  "testPresets": [
+    { "name": "test-safe", "configurePreset": "msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true } }
+  ]
+}

@@ -1,0 +1,25 @@
+name: build-and-test
+on: [push, pull_request]
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            compiler: msvc
+          - os: ubuntu-latest
+            compiler: gcc
+          - os: ubuntu-latest
+            compiler: clang
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Clang
+        if: matrix.compiler == 'clang'
+        run: echo "CXX=clang++" >> $GITHUB_ENV
+      - name: Configure
+        run: cmake -S . -B build -DTRAPS_BUILD_UNSAFE=OFF
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+      - name: Test safe examples
+        run: ctest --test-dir build -C Debug --output-on-failure
