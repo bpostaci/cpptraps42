@@ -26,8 +26,9 @@ void mixed_sign_comparison() {
     const int index = -1;
     const std::vector<int> values{10, 20, 30};
 #if defined(RUN_UNSAFE_EXAMPLE)
-    if (index < values.size()) // BP: -1 converts to a huge size_t, so the guard passes.
-        std::cout << "compare: " << values[static_cast<std::size_t>(index)] << '\n'; // BP: out of bounds.
+    const bool appears_in_range = index < values.size(); // BP: index becomes a huge size_t; the test is false.
+    std::cout << "compare: index < size is " << std::boolalpha << appears_in_range
+              << " after the usual arithmetic conversions\n";
 #else
     if (index >= 0 && static_cast<std::size_t>(index) < values.size())
         std::cout << "compare: " << values[static_cast<std::size_t>(index)] << '\n';
@@ -39,7 +40,7 @@ void mixed_sign_comparison() {
 void narrowing_conversion() {
     const int wide = 300;
 #if defined(RUN_UNSAFE_EXAMPLE)
-    unsigned char narrow = wide; // BP: value does not fit; the result is truncated.
+    unsigned char narrow = wide; // BP: defined modulo conversion, but usually unintended data loss.
     std::cout << "narrow: " << static_cast<int>(narrow) << '\n';
 #else
     if (wide >= 0 && wide <= std::numeric_limits<unsigned char>::max())

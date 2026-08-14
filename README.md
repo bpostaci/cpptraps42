@@ -1,6 +1,6 @@
 # C++ Traps - Visual Studio CMake Training Project
 
-Each of the 30 traps is a separate executable target and lives in its own clearly named folder. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
+Each of the 30 canonical traps is a separate executable target and lives in its own clearly named folder. Selected labs contain several closely related real-world variants without changing the book's canonical 30-trap structure. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
 **Document version:** 1.0.0  
 **Publication date:** 14 August 2026  
@@ -22,7 +22,28 @@ This project was created through collaboration between **Bugra Postaci** and mul
 
 Opening the repository folder keeps Solution Explorer attached to the tracked source tree, so Visual Studio's Git status decorations remain meaningful. It also exposes CMake presets directly and connects the CTest tests to Test Explorer. Do not open a generated solution under `VisualStudio/` or another build directory as the primary workspace.
 
-Projects that contain an intentionally broken operation have a separately generated target ending in `_unsafe`. For example, use `Trap01_UseAfterFree` to study the safe path and `Trap01_UseAfterFree_unsafe` to enter the guarded invalid access. Do not add `RUN_UNSAFE_EXAMPLE` manually; CMake defines it only for these explicit unsafe targets. Prefer an AddressSanitizer configuration for memory-unsafe targets.
+Projects that contain an anti-pattern demonstration have a separately generated target ending in `_unsafe`. For example, use `Trap01_UseAfterFree` to study the safe path and `Trap01_UseAfterFree_unsafe` to enter the guarded invalid access. Do not add `RUN_UNSAFE_EXAMPLE` manually; CMake defines it only for these explicit targets. Depending on the variant, an `_unsafe` branch may demonstrate undefined behavior, a lifetime error, an unspecified-but-valid state, or defined behavior that is surprising and error-prone. Prefer AddressSanitizer for memory-unsafe targets; do not expect a sanitizer to diagnose every logic or API-contract mistake.
+
+## Variant model
+
+The executable target remains the unit you select in Visual Studio. In the following expanded labs, one run executes three short, named examples in sequence; set a breakpoint inside the function for the variant you want to study.
+
+| Target | Included variants |
+|---|---|
+| `Trap03_UninitializedMemory` | uninitialized scalar, default-initialized dynamic object, partially initialized aggregate |
+| `Trap04_OutOfBounds` | unchecked subscript, off-by-one loop, lost array extent |
+| `Trap05_SignedOverflow` | signed overflow, mixed signed/unsigned comparison, narrowing conversion |
+| `Trap06_EndedLifetime` | escaped stack address, deleted object, invalidation after container growth |
+| `Trap07_IteratorInvalidation` | vector reallocation, erase invalidation, container-specific assumptions |
+| `Trap08_StringView` | local owner, temporary owner, owner mutation/reallocation |
+| `Trap09_LambdaCapture` | reference capture, implicit `this`, explicit shared ownership |
+| `Trap12_ObjectSlicing` | copy initialization, base container, pass-by-value |
+| `Trap17_NewDeleteMismatch` | scalar/array mismatch, wrong deallocator family, placement-new lifetime |
+| `Trap19_DoubleFree` | duplicated raw ownership, shallow copy, manual cleanup paths |
+| `Trap21_CheckThenAct` | split locking, queue check/pop, filesystem TOCTOU |
+| `Trap23_MovedFrom` | valid but unspecified state, moved `unique_ptr`, self-move assumptions |
+
+The safe target presents the corrective pattern. The `_unsafe` target activates the contrasting branch; its suffix is a teaching label, not a claim that every line necessarily triggers undefined behavior.
 
 ## CMake
 
@@ -57,7 +78,7 @@ The presets intentionally omit a fixed generator so they can use the Visual Stud
 
 ## Safety
 
-Never enable unsafe branches in production. Undefined behavior may crash, appear to work, or change with optimization. The purpose is to stop immediately before the invalid operation, inspect the lifetime/bounds/ownership invariant, and then let the relevant sanitizer capture evidence.
+Never enable unsafe branches in production. Undefined behavior may crash, appear to work, or change with optimization. Other labs deliberately show defined but misleading conversions, unspecified states, and broken higher-level invariants; these may not trigger a sanitizer at all. Stop before the questionable operation, inspect the relevant lifetime/bounds/ownership contract, and use the appropriate diagnostic tool where one applies.
 
 ## License
 

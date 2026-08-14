@@ -1,6 +1,6 @@
 # Trap Reference
 
-Every trap directory contains one focused example; advanced build traps may contain multiple translation units. Comments explain the invalid operation beside the relevant statement and identify the corrective pattern. When a source contains a guarded `RUN_UNSAFE_EXAMPLE` branch, CMake creates a separately named `_unsafe` target. Traps without such a branch have only their normal target.
+Every trap directory represents one canonical book topic; selected directories contain several named variants of that topic, and advanced build traps may contain multiple translation units. Comments explain the questionable operation beside the relevant statement and identify the corrective pattern. When a source contains a guarded `RUN_UNSAFE_EXAMPLE` branch, CMake creates a separately named `_unsafe` target. Traps without such a branch have only their normal target. `_unsafe` is a teaching label: a branch can be undefined behavior, a lifetime violation, an unspecified-but-valid state, or defined yet dangerous logic.
 
 | Trap | Category | Typical symptom | Why it fails | Detection | Correct direction |
 |---:|---|---|---|---|---|
@@ -34,3 +34,7 @@ Every trap directory contains one focused example; advanced build traps may cont
 | 28 | ABI_Build | shifted fields/calls | binary contracts disagree | layout/symbol inspection | opaque/versioned ABI |
 | 29 | ObjectModel | raw bytes treated as class | storage is not necessarily a live object | lifetime trace | construct_at/destroy_at |
 | 30 | ObjectModel | expression varies by compiler | unsequenced scalar modifications | warnings/UBSan | separate sequenced statements |
+
+## Expanded lab coverage
+
+Targets 03, 04, 05, 06, 07, 08, 09, 12, 17, 19, 21, and 23 each contain three short variant functions called from `main()`. This preserves the searchable 30-trap structure while allowing precise breakpoints on common forms of the same bug. The PDF explains the canonical rule; the repository supplies additional practice variants, so variant functions do not require separate PDF pages.
