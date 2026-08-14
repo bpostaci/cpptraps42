@@ -2,6 +2,10 @@
 
 Each of the 30 traps is a separate executable target and lives in its own clearly named folder. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
+## Human-AI collaboration
+
+This project was created through collaboration between **Bugra Postaci** and **OpenAI Codex**. Bugra defined the goals, selected the scope, directed the iterations, reviewed the outputs, and retains responsibility for the final publication. Codex assisted with drafting, code scaffolding, documentation, build automation, consistency checks, and PDF layout. AI assistance does not replace independent technical review; corrections and reproducible issue reports are welcome.
+
 ## Visual Studio
 
 1. Select **File > Open > Folder...**.
