@@ -33,4 +33,4 @@ Every trap directory contains one focused example; advanced build traps may cont
 | 27 | ABI_Build | modules disagree on type | inconsistent definitions violate ODR | preprocessed/layout comparison | canonical header/config |
 | 28 | ABI_Build | shifted fields/calls | binary contracts disagree | layout/symbol inspection | opaque/versioned ABI |
 | 29 | ObjectModel | raw bytes treated as class | storage is not necessarily a live object | lifetime trace | construct_at/destroy_at |
-| 30 | ABI_Build | expression varies by compiler | unsequenced scalar modifications | warnings/UBSan | separate sequenced statements |
+| 30 | ObjectModel | expression varies by compiler | unsequenced scalar modifications | warnings/UBSan | separate sequenced statements |

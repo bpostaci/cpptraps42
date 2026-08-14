@@ -1,5 +1,6 @@
 .vs/
 build/
+[Bb]uild*/
 out/
 VisualStudio/
 Suggestions/
