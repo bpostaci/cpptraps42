@@ -4,7 +4,7 @@ Each of the 30 traps is a separate executable target and lives in its own clearl
 
 ## Human-AI collaboration
 
-This project was created through collaboration between **Bugra Postaci** and **OpenAI Codex**. Bugra defined the goals, selected the scope, directed the iterations, reviewed the outputs, and retains responsibility for the final publication. Codex assisted with drafting, code scaffolding, documentation, build automation, consistency checks, and PDF layout. AI assistance does not replace independent technical review; corrections and reproducible issue reports are welcome.
+This project was created through collaboration between **Bugra Postaci** and multiple AI systems, including **OpenAI Codex, Claude, Fable, and MAI**. Bugra defined the goals, selected the scope, directed the iterations, reviewed the outputs, and retains responsibility for the final publication. The AI systems assisted across drafting, code scaffolding, documentation, build automation, consistency checks, review suggestions, and PDF layout. AI assistance does not replace independent technical review; corrections and reproducible issue reports are welcome.
 
 ## Visual Studio
 
