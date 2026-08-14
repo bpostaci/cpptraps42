@@ -2,6 +2,7 @@
 build/
 out/
 VisualStudio/
+Suggestions/
 CMakeFiles/
 CMakeCache.txt
 *.user
