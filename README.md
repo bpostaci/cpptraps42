@@ -1,14 +1,18 @@
-# C++ Traps - Visual Studio Training Solution
+# C++ Traps - Visual Studio CMake Training Project
 
-Each of the 30 traps is a separate executable project and lives in its own clearly named folder. Open `VisualStudio/CppTrapsCode.slnx` for the normal Visual Studio experience, or open this root folder as a CMake project. Both use the same source files.
+Each of the 30 traps is a separate executable target and lives in its own clearly named folder. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
 ## Visual Studio
 
-1. Open `VisualStudio/CppTrapsCode.slnx`.
-2. In Solution Explorer, expand `Memory`, `Lifetime`, `ObjectModel`, `Concurrency`, or `ABI_Build`.
-3. Right-click one trap project and choose **Set as Startup Project**.
-4. Search its `main.cpp` for `BP:` and set the suggested breakpoints.
-5. Build/run with `F5`.
+1. Select **File > Open > Folder...**.
+2. Open the repository root: `C:\src\cpptraps42`.
+3. Visual Studio detects `CMakeLists.txt` and `CMakePresets.json` automatically.
+4. Select `msvc-debug` or `msvc-asan-unsafe` from the configuration preset menu.
+5. In Solution Explorer, expand `Memory`, `Lifetime`, `ObjectModel`, `Concurrency`, or `ABI_Build`.
+6. Select the trap target you want to run, search its sources for `BP:`, and set the suggested breakpoints.
+7. Build and start debugging with `F5`.
+
+Opening the repository folder keeps Solution Explorer attached to the tracked source tree, so Visual Studio's Git status decorations remain meaningful. It also exposes CMake presets directly and connects the CTest tests to Test Explorer. Do not open a generated solution under `VisualStudio/` or another build directory as the primary workspace.
 
 Projects that contain an intentionally broken operation have a separately generated target ending in `_unsafe`. For example, use `Trap01_UseAfterFree` to study the safe path and `Trap01_UseAfterFree_unsafe` to enter the guarded invalid access. Do not add `RUN_UNSAFE_EXAMPLE` manually; CMake defines it only for these explicit unsafe targets. Prefer an AddressSanitizer configuration for memory-unsafe targets.
 
@@ -19,7 +23,7 @@ cmake -S . -B build
 cmake --build build --config Debug
 ```
 
-The CMake-generated solution also groups targets by the same topic folders.
+Visual Studio's CMake target view groups targets by the same topic folders.
 
 ### Repeatable presets
 
