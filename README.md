@@ -3,7 +3,8 @@
 Each of the 30 traps is a separate executable target and lives in its own clearly named folder. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
 **Document version:** 1.0.0  
-**Publication date:** 14 August 2026
+**Publication date:** 14 August 2026  
+**Author:** Buğra POSTACI · Software Engineer · Debugging Specialist
 
 ## Human-AI collaboration
 
