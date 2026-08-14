@@ -54,3 +54,7 @@ The presets intentionally omit a fixed generator so they can use the Visual Stud
 ## Safety
 
 Never enable unsafe branches in production. Undefined behavior may crash, appear to work, or change with optimization. The purpose is to stop immediately before the invalid operation, inspect the lifetime/bounds/ownership invariant, and then let the relevant sanitizer capture evidence.
+
+## License
+
+This project is released under the [MIT License](LICENSE). Copyright (c) 2026 Bugra Postaci.
