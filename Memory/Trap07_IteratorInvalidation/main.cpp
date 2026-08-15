@@ -2,18 +2,19 @@
 #include <map>
 #include <vector>
 
-// Type 1: growth reallocates the buffer and invalidates every handle.
+// Type 1: growth reallocates the buffer and invalidates iterators, pointers and references alike.
 void reallocation_invalidation() {
     std::vector<int> v{1,2,3}; v.shrink_to_fit();
     auto old = v.begin();
+    int& old_reference = v.front(); // A reference is invalidated by exactly the same event.
     const int* old_buffer = v.data();
     v.push_back(4); // BP: reallocation can invalidate all handles into the vector.
     std::cout << "old buffer=" << old_buffer << " new buffer=" << v.data() << '\n';
 #if defined(RUN_UNSAFE_EXAMPLE)
-    std::cout << "realloc: " << *old << '\n'; // BP: stale iterator; use ASan/debug iterators.
+    std::cout << "realloc: " << *old << " / " << old_reference << '\n'; // BP: stale iterator and reference.
 #else
-    (void)old;
-    std::cout << "realloc: " << *v.begin() << '\n'; // Reacquire after mutation.
+    (void)old; (void)old_reference;
+    std::cout << "realloc: " << *v.begin() << " / " << v.front() << '\n'; // Reacquire after mutation.
 #endif
 }
 

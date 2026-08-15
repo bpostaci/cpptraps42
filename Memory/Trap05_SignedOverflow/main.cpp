@@ -1,7 +1,6 @@
 #include <iostream>
 #include <limits>
 #include <optional>
-#include <vector>
 
 std::optional<int> safe_add(int a, int b) {
     if ((b > 0 && a > std::numeric_limits<int>::max() - b) ||
@@ -11,41 +10,35 @@ std::optional<int> safe_add(int a, int b) {
     return a + b;
 }
 
-// Type 1: signed overflow is undefined, not wrapping.
-void signed_overflow() {
+// Type 1: addition past INT_MAX is undefined, not wrapping.
+void additive_overflow() {
 #if defined(RUN_UNSAFE_EXAMPLE)
     volatile int maximum = std::numeric_limits<int>::max();
-    std::cout << "overflow: " << maximum + 1 << '\n'; // BP: signed overflow occurs here; use UBSan.
+    std::cout << "add: " << maximum + 1 << '\n'; // BP: signed overflow occurs here; use UBSan.
 #else
-    std::cout << "overflow: rejected by safe_add\n";
+    std::cout << "add: rejected by safe_add\n";
 #endif
 }
 
-// Type 2: comparing signed with unsigned converts the signed operand.
-void mixed_sign_comparison() {
-    const int index = -1;
-    const std::vector<int> values{10, 20, 30};
+// Type 2: multiplication overflows long before the operands look suspicious.
+void multiplicative_overflow() {
+    volatile int factor = 100000;
 #if defined(RUN_UNSAFE_EXAMPLE)
-    const bool appears_in_range = index < values.size(); // BP: index becomes a huge size_t; the test is false.
-    std::cout << "compare: index < size is " << std::boolalpha << appears_in_range
-              << " after the usual arithmetic conversions\n";
+    std::cout << "mul: " << factor * factor << '\n'; // BP: 10^10 does not fit in int.
 #else
-    if (index >= 0 && static_cast<std::size_t>(index) < values.size())
-        std::cout << "compare: " << values[static_cast<std::size_t>(index)] << '\n';
-    else std::cout << "compare: rejected negative index\n";
+    const long long widened = static_cast<long long>(factor) * factor; // Widen before multiplying.
+    std::cout << "mul: " << widened << '\n';
 #endif
 }
 
-// Type 3: implicit narrowing silently discards the high bits.
-void narrowing_conversion() {
-    const int wide = 300;
+// Type 3: negating INT_MIN has no representable result.
+void negation_overflow() {
+    volatile int minimum = std::numeric_limits<int>::min();
 #if defined(RUN_UNSAFE_EXAMPLE)
-    unsigned char narrow = wide; // BP: defined modulo conversion, but usually unintended data loss.
-    std::cout << "narrow: " << static_cast<int>(narrow) << '\n';
+    std::cout << "neg: " << -minimum << '\n'; // BP: |INT_MIN| exceeds INT_MAX.
 #else
-    if (wide >= 0 && wide <= std::numeric_limits<unsigned char>::max())
-        std::cout << "narrow: " << wide << '\n';
-    else std::cout << "narrow: rejected out-of-range conversion\n";
+    const long long widened = -static_cast<long long>(minimum); // Widen before negating.
+    std::cout << "neg: " << widened << '\n';
 #endif
 }
 
@@ -56,7 +49,7 @@ int main() {
     unsigned wrapping = std::numeric_limits<unsigned>::max();
     ++wrapping; // Defined modulo 2^N, unlike signed overflow.
     std::cout << "; unsigned wrap=" << wrapping << '\n';
-    signed_overflow();
-    mixed_sign_comparison();
-    narrowing_conversion();
+    additive_overflow();
+    multiplicative_overflow();
+    negation_overflow();
 }
