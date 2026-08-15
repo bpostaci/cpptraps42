@@ -7,9 +7,10 @@ Each of the 42 canonical traps is a separate executable target and lives in its 
 This is not only a collection of C++ mistakes or corrected code. Every trap connects the language rule to a reproducible investigation: runnable C++20 targets, `BP:` breakpoint plans, Visual Studio inspection, per-trap WinDbg/CDB notebooks, sanitizer guidance, memory and object-state evidence, call-stack analysis, and a root-cause explanation. The goal is to teach both **what went wrong** and **how to prove it in a debugger**.
 
 **Document version:** 2.0.0  
-**Publication date:** 15 August 2026
-**Author:** Buğra POSTACI · Software Engineer · Debugging Specialist
-**Repository:** https://github.com/bpostaci/cpptraps42
+**Publication date:** 15 August 2026  
+**Author:** Buğra POSTACI · Software Engineer · Debugging Specialist  
+**Repository:** https://github.com/bpostaci/cpptraps42  
+**Visual book:** [Download the 42 C++ TRAPS Visual Edition PDF](docs/42_CPP_TRAPS_Visual_Edition.pdf)
 
 Traps 01-30 form the original canonical set. Traps 31-42 extend it with the everyday standard-library, class-design, and parsing mistakes that practising C++ engineers report most often.
 
