@@ -1,6 +1,10 @@
-# C++ Traps 42 - Visual Studio CMake Training Project
+# C++ Traps 42 - C++20 Debugging Field Guide
 
 Each of the 42 canonical traps is a separate executable target and lives in its own clearly named folder. Selected labs contain several closely related real-world variants without changing the book's canonical trap structure. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
+
+**Learn the trap. Reproduce the failure. Debug the evidence. Understand the root cause.**
+
+This is not only a collection of C++ mistakes or corrected code. Every trap connects the language rule to a reproducible investigation: runnable C++20 targets, `BP:` breakpoint plans, Visual Studio inspection, per-trap WinDbg/CDB notebooks, sanitizer guidance, memory and object-state evidence, call-stack analysis, and a root-cause explanation. The goal is to teach both **what went wrong** and **how to prove it in a debugger**.
 
 **Document version:** 2.0.0  
 **Publication date:** 15 August 2026
