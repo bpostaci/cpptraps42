@@ -6,6 +6,21 @@ An expanded target runs three named variant functions in sequence. You do not ne
 
 `_unsafe` means “contrast/anti-pattern teaching branch.” It does not guarantee a crash or sanitizer report. Some variants are undefined behavior; others are defined but surprising, valid with an unspecified state, or unsafe only when another thread/process changes the state between operations.
 
+## WinDbg/CDB notebooks beside every trap
+
+All 42 trap folders contain `debug_analysis.md` and `debug_analysis.txt`. The two files describe the same trap-specific session in different formats: Markdown for study and review, plain text for keeping beside a CDB prompt. Each notebook includes the relevant source excerpt, normal and unsafe build commands where applicable, symbol/source-path setup, exact breakpoint commands, inspection commands, representative evidence, and the invariant that explains that evidence.
+
+Use the notebook in the selected trap folder rather than copying commands from another trap. Target names, source paths, line numbers, useful symbols, and debugger limitations differ. A typical workflow is:
+
+1. Open `TrapXX_Name/debug_analysis.md` and read the question and short answer.
+2. Build the exact target listed in its **Build without a sanitizer** section.
+3. Start CDB with that notebook's executable, symbol path, and source path.
+4. Apply its initial debugger settings (for example `.symopt-100` and `.lines -e` when specified).
+5. Run the safe session first, then the `_unsafe` session only when the notebook provides one.
+6. Compare relationships and invariants, not ASLR-dependent addresses or allocator-specific byte values.
+
+`DEBUGGING.md` is the cross-project map; the two files beside `main.cpp` are the authoritative step-by-step session for that individual trap.
+
 ## Inspecting the expanded labs
 
 | Target and variant | Breakpoint and observations |

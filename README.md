@@ -25,6 +25,15 @@ This project was created through collaboration between **Bugra Postaci** and mul
 
 Opening the repository folder keeps Solution Explorer attached to the tracked source tree, so Visual Studio's Git status decorations remain meaningful. It also exposes CMake presets directly and connects the CTest tests to Test Explorer. Do not open a generated solution under `VisualStudio/` or another build directory as the primary workspace.
 
+### Per-trap WinDbg/CDB analysis
+
+Every `TrapXX_*` folder also contains two equivalent, trap-specific native-debugger notebooks:
+
+- `debug_analysis.md` - the readable walkthrough with the source excerpt, build commands, breakpoint plan, CDB/WinDbg commands, expected evidence, and interpretation.
+- `debug_analysis.txt` - the same session in a console-friendly plain-text form for copying commands while CDB is open.
+
+These files are not generic debugger notes. Each one is written for that trap's actual target, `BP:` markers, symbols, invariants, and safe/unsafe distinction. Start with the Markdown notebook beside `main.cpp`; use the text version when running the command-line session. The repository therefore supports two complementary paths: Visual Studio for interactive source debugging and CDB/WinDbg for a reproducible command-and-evidence session.
+
 Projects that contain an anti-pattern demonstration have a separately generated target ending in `_unsafe`. For example, use `Trap01_UseAfterFree` to study the safe path and `Trap01_UseAfterFree_unsafe` to enter the guarded invalid access. Do not add `RUN_UNSAFE_EXAMPLE` manually; CMake defines it only for these explicit targets. Depending on the variant, an `_unsafe` branch may demonstrate undefined behavior, a lifetime error, an unspecified-but-valid state, or defined behavior that is surprising and error-prone. Prefer AddressSanitizer for memory-unsafe targets; do not expect a sanitizer to diagnose every logic or API-contract mistake.
 
 ## Variant model
