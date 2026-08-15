@@ -1,10 +1,12 @@
 # C++ Traps - Visual Studio CMake Training Project
 
-Each of the 30 canonical traps is a separate executable target and lives in its own clearly named folder. Selected labs contain several closely related real-world variants without changing the book's canonical 30-trap structure. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
+Each of the 42 canonical traps is a separate executable target and lives in its own clearly named folder. Selected labs contain several closely related real-world variants without changing the book's canonical trap structure. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
-**Document version:** 1.0.0  
+**Document version:** 2.0.0  
 **Publication date:** 14 August 2026  
 **Author:** Buğra POSTACI · Software Engineer · Debugging Specialist
+
+Traps 01-30 form the original canonical set. Traps 31-42 extend it with the everyday standard-library, class-design, and parsing mistakes that practising C++ engineers report most often.
 
 ## Human-AI collaboration
 
@@ -42,6 +44,18 @@ The executable target remains the unit you select in Visual Studio. In the follo
 | `Trap19_DoubleFree` | duplicated raw ownership, shallow copy, manual cleanup paths |
 | `Trap21_CheckThenAct` | split locking, queue check/pop, filesystem TOCTOU |
 | `Trap23_MovedFrom` | valid but unspecified state, moved `unique_ptr`, self-move assumptions |
+| `Trap31_ShallowCopy` | implicit copy of a raw owner, Rule of Three, Rule of Zero |
+| `Trap32_SharedPtrCycle` | owning cycle, `weak_ptr` back edge, locking an expired observer |
+| `Trap33_MapBracketInsert` | inserting lookup, non-mutating lookup, intentional insert-or-update |
+| `Trap34_VectorBool` | proxy reference, missing contiguous storage, better alternatives |
+| `Trap35_AutoDropsRef` | copied reference, copying range-for, `decltype(auto)` |
+| `Trap36_HiddenOverload` | name hiding, `using` re-exposure, `override` signature mismatch |
+| `Trap37_VirtualDefaultArg` | static default argument, non-virtual interface, real overloads |
+| `Trap38_MostVexingParse` | empty parentheses, constructor-shaped arguments, brace pitfalls |
+| `Trap39_MemberInitOrder` | declaration-order initialization, safe dependent members, base ordering |
+| `Trap40_FloatComparison` | exact equality, scaled tolerance, accumulation and NaN |
+| `Trap41_UnsignedUnderflow` | `size() - 1` wrap, reverse loop, mixed-sign comparison |
+| `Trap42_ThreadJoinDetach` | joinable destruction, exception path, detached data lifetime |
 
 The safe target presents the corrective pattern. The `_unsafe` target activates the contrasting branch; its suffix is a teaching label, not a claim that every line necessarily triggers undefined behavior.
 
@@ -72,7 +86,7 @@ cmake --build --preset build-asan-unsafe
 An unsafe target is suffixed `_unsafe`, for example `Trap01_UseAfterFree_unsafe`. CMake creates this sibling only when the trap source contains a `RUN_UNSAFE_EXAMPLE` branch; conceptual or already-safe demonstrations do not receive a duplicate unsafe target.
 MSVC supports AddressSanitizer but not ThreadSanitizer or MemorySanitizer. Use Clang/GCC in Linux or WSL for TSan; MemorySanitizer is primarily supported by Clang on suitable platforms.
 
-The trap number is the position in the canonical 30-trap book list. Categories therefore contain non-contiguous numbers by design.
+The trap number is the position in the canonical 42-trap book list. Categories therefore contain non-contiguous numbers by design.
 
 The presets intentionally omit a fixed generator so they can use the Visual Studio version installed on the current machine. Run them from a Visual Studio Developer PowerShell or another shell where MSVC and CMake are available.
 

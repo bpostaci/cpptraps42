@@ -28,6 +28,18 @@ Answer these before opening the key. Several questions deliberately distinguish 
 22. Why does virtual dispatch select `Base` inside `Base::Base()`?
 23. What is missing from `address + sizeof(T)` before the storage can be accessed as a live `T`?
 24. Is matching `sizeof` enough to prove ABI compatibility?
+25. If a class declares a destructor but no copy operations, what does the compiler still generate, and why is that dangerous for a raw owning pointer?
+26. Two objects hold `shared_ptr` members pointing at each other. What are their use counts at scope exit, and which destructor runs?
+27. Does reading `map["missing"]` change the container?
+28. Why can you not bind `bool&` to an element of `std::vector<bool>`?
+29. What does `auto x = f();` deduce when `f` returns `T&`, and what is the runtime cost?
+30. A derived class declares `void log(double)`. Why does `derived.log("text")` fail to compile even though the base has a string overload?
+31. A virtual function is overridden with a different default argument. Which default applies when called through a base reference?
+32. What does `Timer t();` declare inside a function body?
+33. In which order are members initialized, and what determines it?
+34. Why is `0.1 + 0.2 == 0.3` false, and why is a fixed absolute epsilon insufficient?
+35. `container.size() - 1` on an empty container yields what, and is it undefined behavior?
+36. What happens when a joinable `std::thread` reaches its destructor?
 
 ## Practical exercises
 
@@ -38,6 +50,11 @@ Answer these before opening the key. Several questions deliberately distinguish 
 5. In `Trap19_DoubleFree_unsafe`, use AddressSanitizer and identify the first ownership mistake, the first release, and the later reported failure. They may be different locations.
 6. In `Trap21_CheckThenAct`, write the smallest possible competing-thread/process timeline between the check and use. Do not rely on single-step execution to reproduce it.
 7. In `Trap29_RawBytes`, stop before `construct_at`, after construction, and after `destroy_at`. At each stop, state whether storage exists and whether a `Record` object is alive.
+8. In `Trap31_ShallowCopy_unsafe`, run under AddressSanitizer and identify which of the two destructors reports the failure. Then explain why the real defect is the missing copy constructor, not the second destructor.
+9. In `Trap32_SharedPtrCycle`, log `use_count()` at three points and explain why the cyclic case never reaches zero. Confirm that changing one edge to `weak_ptr` restores both destructor calls.
+10. In `Trap35_AutoDropsRef`, print the address of the source object and of each deduced variable. Classify each of `auto`, `auto&`, `const auto&`, and `decltype(auto)` as copy or alias.
+11. In `Trap39_MemberInitOrder_unsafe`, break in the constructor and record the value of `count` at the moment `doubled` is computed. Explain why reordering the init-list would not fix it.
+12. In `Trap41_UnsignedUnderflow`, evaluate `v.size() - 1` for an empty container in the watch window. Explain why this is defined behavior yet still a bug, and why no sanitizer reports it.
 
 ## Answer key
 
@@ -65,6 +82,18 @@ Answer these before opening the key. Several questions deliberately distinguish 
 22. During base construction the derived subobject is not yet active, so virtual dispatch is limited to the currently constructed class.
 23. Suitable alignment, storage duration, a begun `T` lifetime, valid provenance, permitted typed access, and satisfied object invariants.
 24. No. Alignment, offsets, packing, calling convention, runtime/allocator, ownership, exception rules, and representation must also agree.
+25. The copy constructor and copy assignment are still generated and copy the pointer value, so two objects claim one allocation and both release it. Declare copy and move operations, or hold the resource in a member that owns it correctly.
+26. Both counts remain at 1 after the scope-local owners are destroyed, so neither destructor runs and both objects leak. Exactly one edge of the cycle must be a `weak_ptr`.
+27. Yes. `operator[]` default-constructs and inserts a value for a missing key. Use `find`, `at`, or `contains` when the intent is to read.
+28. It is a bit-packed specialization with no addressable `bool` elements. `operator[]` returns a proxy object that writes through to the packed bits.
+29. It deduces `T`, stripping the reference and top-level const, so a full copy is made and later writes do not reach the original.
+30. Declaring any member named `log` hides every base overload of that name. Add `using Base::log;` to bring them back into the overload set.
+31. The base default applies. The body is selected by the dynamic type, but default arguments are substituted from the static type; keep defaults out of virtual functions.
+32. A function named `t` taking no parameters and returning `Timer`. Use `Timer t;` or `Timer t{};` to define an object.
+33. In the order the members are declared in the class, after all base subobjects. The order written in the member-initializer list is irrelevant, so a member must never be initialized from a member declared after it.
+34. Neither operand is exactly representable in binary floating point, so the sum differs from the literal `0.3` by a rounding error. A fixed epsilon fails for large magnitudes, where the smallest representable gap already exceeds it; scale the tolerance to the operands.
+35. It yields the maximum value of the unsigned type. This is defined modular arithmetic, not undefined behavior, which is exactly why no sanitizer flags it. Guard with `empty()` or use signed sizes.
+36. Its destructor calls `std::terminate` and the process aborts. Join or detach on every path, or use `std::jthread`, which joins in its destructor.
 
 ### Practical exercise checkpoints
 
@@ -75,3 +104,8 @@ Answer these before opening the key. Several questions deliberately distinguish 
 - Exercise 5: repair ownership at its origin, not merely the second `delete` site.
 - Exercise 6: the bug is the unprotected interval; a deterministic crash is not required.
 - Exercise 7: raw storage exists at all three stops, but a live `Record` exists only between construction and destruction.
+- Exercise 8: ASan reports the second release, while the defect originates in the implicitly generated copy.
+- Exercise 9: the cyclic pair holds each other alive at count 1; the `weak_ptr` edge does not contribute to ownership.
+- Exercise 10: only `auto` copies; the other three alias the original object.
+- Exercise 11: `count` is still indeterminate, because declaration order fixed the sequence before the init-list was written.
+- Exercise 12: the wrap is defined behavior, so the bug is visible only through the invariant, not through a tool.

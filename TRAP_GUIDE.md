@@ -34,7 +34,23 @@ Every trap directory represents one canonical book topic; selected directories c
 | 28 | ABI_Build | shifted fields/calls | binary contracts disagree | layout/symbol inspection | opaque/versioned ABI |
 | 29 | ObjectModel | raw bytes treated as class | storage is not necessarily a live object | lifetime trace | construct_at/destroy_at |
 | 30 | ObjectModel | expression varies by compiler | unsequenced scalar modifications | warnings/UBSan | separate sequenced statements |
+| 31 | Memory | double free on scope exit | implicit copy duplicates a raw owner | ASan | Rule of Three/Zero |
+| 32 | Lifetime | destructor never runs | owning cycle keeps use_count above zero | leak tools/use_count | `weak_ptr` back edge |
+| 33 | Memory | container grows while reading | `operator[]` is a mutating lookup | size assertions | `find`/`at`/`contains` |
+| 34 | ObjectModel | `bool&` will not bind | bit-packed specialization returns a proxy | compile errors | `bitset`/`array`/`vector<char>` |
+| 35 | Lifetime | writes hit a hidden copy | `auto` drops reference and const | debugger type inspection | `auto&`/`const auto&`/`decltype(auto)` |
+| 36 | ObjectModel | base overload not found | derived name hides the base set | overload resolution trace | `using Base::f` |
+| 37 | ObjectModel | wrong default through base | default argument binds statically | static vs dynamic type check | non-virtual interface |
+| 38 | ObjectModel | member access will not compile | declaration parsed instead of definition | C4930/-Wvexing-parse | brace initialization |
+| 39 | ObjectModel | member built from garbage | declaration order beats init-list order | warnings/MSan | order declarations or assign in body |
+| 40 | Memory | equality test never true | decimals are not representable in binary | value inspection | scaled tolerance/`isnan` |
+| 41 | Memory | huge index or endless loop | unsigned subtraction wraps | warnings/ASan | guard emptiness/`ssize`/reverse iterators |
+| 42 | Concurrency | abrupt `std::terminate` | joinable thread destroyed | exception breakpoints | `jthread`/RAII join |
 
 ## Expanded lab coverage
 
-Targets 03, 04, 05, 06, 07, 08, 09, 12, 17, 19, 21, and 23 each contain three short variant functions called from `main()`. This preserves the searchable 30-trap structure while allowing precise breakpoints on common forms of the same bug. The PDF explains the canonical rule; the repository supplies additional practice variants, so variant functions do not require separate PDF pages.
+Targets 03, 04, 05, 06, 07, 08, 09, 12, 17, 19, 21, 23, and every target from 31 to 42 each contain three short variant functions called from `main()`. This preserves the searchable per-trap structure while allowing precise breakpoints on common forms of the same bug. The PDF explains the canonical rule; the repository supplies additional practice variants, so variant functions do not require separate PDF pages.
+
+## Set boundaries
+
+Traps 01-30 are the original canonical list, weighted towards undefined behavior, object model, and build/ABI contracts. Traps 31-42 cover the standard-library and class-design mistakes that appear most often in day-to-day code review. Several of them are not undefined behavior at all: 33, 34, 35, 36, 37, 38, 40, and 41 are fully defined yet routinely produce wrong programs, so sanitizer silence is the expected outcome and the debugger plus the type/contract review is the correct tool.

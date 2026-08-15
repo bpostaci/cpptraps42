@@ -28,6 +28,18 @@ An expanded target runs three named variant functions in sequence. You do not ne
 | `Trap19` duplicate owner/shallow copy/cleanup path | Track every pointer value and list who believes it owns the allocation. Set a data breakpoint or ASan breakpoint at the first release, not only the later failure. |
 | `Trap21` split lock/queue/filesystem | Mark the check and the use as separate events. Ask what another thread or process can change between them. A debugger may hide the race; these examples illustrate the TOCTOU window rather than forcing a deterministic failure. |
 | `Trap23` string/`unique_ptr`/self-move | Inspect the object after the move. It remains valid where the type contract says so, but its state may be unspecified; `unique_ptr` specifically becomes null after a successful move. Do not assume a particular self-move result unless the contract guarantees it. |
+| `Trap31` implicit copy/Rule of Three/Rule of Zero | Watch the raw pointer member in both objects after the copy. Identical addresses mean two owners and two `delete[]` calls. Compare against the deep-copy and smart-member versions. |
+| `Trap32` cycle/`weak_ptr`/lock | Watch `use_count()` before and after the back edge is assigned, then at scope exit. Missing destructor output is the leak evidence; no sanitizer report is expected. |
+| `Trap33` bracket/find/histogram | Inspect `size()` immediately before and after the `operator[]` lookup. The container grew during what looked like a read. |
+| `Trap34` proxy/storage/alternatives | Inspect the type of `bits[0]` in the debugger. It is `std::vector<bool>::reference`, not `bool`, so the local copy still writes through to the container. |
+| `Trap35` reference/range-for/`decltype(auto)` | Compare the address of the deduced variable with the address of the source object. Different addresses prove a copy was made. |
+| `Trap36` hiding/`using`/`override` | Step into each call and read the resolved function name in the call stack. The chosen overload, not a crash, is the evidence. |
+| `Trap37` default argument/NVI/overloads | Call through both the derived and the base static type. The body comes from the dynamic type and the default argument from the static type. |
+| `Trap38` empty parens/arguments/braces | This trap is resolved at compile time. Read the MSVC C4930 warning and confirm the declared entity is a function, then compare `vector<int> v(3,0)` with `vector<int> v{3,0}` in the watch window. |
+| `Trap39` reorder/safe/base ordering | Break in the constructor and step over each member initialization. The execution order follows the declarations, not the order written in the init-list. |
+| `Trap40` equality/tolerance/accumulation | Print with `setprecision(20)` to see the stored value rather than the rounded display. Compare the absolute difference against a magnitude-scaled tolerance. |
+| `Trap41` `size()-1`/reverse loop/mixed sign | Inspect the unsigned result of the subtraction. A value near `SIZE_MAX` is the wrap, and it is defined behavior, not corruption. |
+| `Trap42` joinable/exception/detach | Break in the thread destructor path. A joinable thread reaching its destructor calls `std::terminate`, so use the `_unsafe` target deliberately and expect the process to abort. |
 
 ## Other high-value stops
 
@@ -49,6 +61,9 @@ An expanded target runs three named variant functions in sequence. You do not ne
 | data race | ThreadSanitizer (Clang/Linux or WSL) | not available in MSVC; debugger timing can hide races |
 | uninitialized value | compiler warnings / MemorySanitizer | MSan is primarily a Clang tool on supported platforms |
 | slicing, moved-from assumptions, narrowing | debugger + contract review | often valid/defined, so sanitizer silence is expected |
+| name hiding, default arguments, vexing parse | compiler warnings + call stack | resolved at compile time; no runtime tool applies |
+| inserting lookup, unsigned wrap, float equality | debugger + invariant assertions | fully defined behavior, so no sanitizer will report it |
+| leaked `shared_ptr` cycle | `use_count` inspection / leak report | ASan reports the leak, not the cycle that caused it |
 
 ## A repeatable debugging loop
 
