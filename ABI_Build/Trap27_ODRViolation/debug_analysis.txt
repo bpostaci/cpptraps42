@@ -1,0 +1,163 @@
+===============================================================================
+ Trap27_ODRViolation - CDB debug analysis
+===============================================================================
+
+QUESTION
+  will the linker diagnose two different definitions of the same class in different translation units?
+
+SHORT ANSWER
+  not necessarily. The unsafe target is undefined behavior with no diagnostic required: `main.cpp` compiles `Packet` as 4 bytes, while `provider.cpp` compiles it as 16 bytes.
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+Directory contents: main.cpp, packet.hpp, provider.cpp.
+
+packet.hpp:
+ 1  #pragma once
+ 2  #include <cstddef>
+ 3  struct Packet {
+ 4      int id;
+ 5  #ifdef EXTRA_FIELD
+ 6      void* payload;
+ 7  #endif
+ 8  };
+ 9  std::size_t provider_packet_size();
+
+provider.cpp:
+ 1  #if defined(RUN_UNSAFE_EXAMPLE)
+ 2  #define EXTRA_FIELD // Only this translation unit sees the extra member: intentional ODR violation.
+ 3  #endif
+ 4  #include "packet.hpp"
+ 5  std::size_t provider_packet_size() { return sizeof(Packet); }
+
+main.cpp:
+ 1  #include "packet.hpp"
+ 2  #include <iostream>
+ 3  int main() {
+ 4      std::cout << "consumer sizeof(Packet)=" << sizeof(Packet)
+ 5                << ", provider sizeof(Packet)=" << provider_packet_size() << '\n'; // BP: compare TU assumptions.
+ 6  }
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+cmake --build build\cdb --config Debug --target Trap27_ODRViolation Trap27_ODRViolation_unsafe
+
+No sanitizer detects this ODR violation; MSVC ASan is not an ODR checker.
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug -srcpath C:\src\cpptraps42\ABI_Build\Trap27_ODRViolation C:\src\cpptraps42\build\cdb\Debug\Trap27_ODRViolation_unsafe.exe
+
+Use .symopt-100 and .lines -e first.
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+dt Packet and ?? sizeof(Packet) did not resolve because this tiny program emits no inspectable Packet object in the PDB. The disassembly still gives real evidence: each translation unit compiled a size constant.
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:4
+0:000> x Trap27_ODRViolation!*provider*
+00007ff70bfd2380 Trap27_ODRViolation!provider_packet_size (void)
+0:000> uf Trap27_ODRViolation!provider_packet_size
+Trap27_ODRViolation!provider_packet_size [C:\src\cpptraps42\ABI_Build\Trap27_ODRViolation\provider.cpp @ 5]:
+    5 00007ff70bfd2380 4057            push    rdi
+    5 00007ff70bfd2382 b804000000      mov     eax,4
+    5 00007ff70bfd2387 5f              pop     rdi
+    5 00007ff70bfd2388 c3              ret
+0:000> g
+Breakpoint 0 hit
+Trap27_ODRViolation!main+0x6:
+00007ff70bfd1556 488d15b3970000  lea     rdx,[Trap27_ODRViolation!__xt_z+0x270 (00007ff70bfdad10)]
+0:000> uf Trap27_ODRViolation!main
+Trap27_ODRViolation!main [C:\src\cpptraps42\ABI_Build\Trap27_ODRViolation\main.cpp @ 3]:
+    4 00007ff70bfd156e ba04000000      mov     edx,4
+    4 00007ff70bfd1592 e877fbffff      call    Trap27_ODRViolation!ILT+265(?provider_packet_sizeYA_KXZ) (00007ff70bfd110e)
+0:000> g
+consumer sizeof(Packet)=4, provider sizeof(Packet)=4
+
+
+-------------------------------------------------------------------------------
+ 5. THE UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:4
+0:000> x Trap27_ODRViolation_unsafe!*provider*
+00007ff628de2380 Trap27_ODRViolation_unsafe!provider_packet_size (void)
+0:000> uf Trap27_ODRViolation_unsafe!provider_packet_size
+Trap27_ODRViolation_unsafe!provider_packet_size [C:\src\cpptraps42\ABI_Build\Trap27_ODRViolation\provider.cpp @ 5]:
+    5 00007ff628de2380 4057            push    rdi
+    5 00007ff628de2382 b810000000      mov     eax,10h
+    5 00007ff628de2387 5f              pop     rdi
+    5 00007ff628de2388 c3              ret
+0:000> g
+Breakpoint 0 hit
+Trap27_ODRViolation_unsafe!main+0x6:
+00007ff628de1556 488d15b3970000  lea     rdx,[Trap27_ODRViolation_unsafe!__xt_z+0x270 (00007ff628dead10)]
+0:000> uf Trap27_ODRViolation_unsafe!main
+Trap27_ODRViolation_unsafe!main [C:\src\cpptraps42\ABI_Build\Trap27_ODRViolation\main.cpp @ 3]:
+    4 00007ff628de156e ba04000000      mov     edx,4
+    4 00007ff628de1592 e877fbffff      call    Trap27_ODRViolation_unsafe!ILT+265(?provider_packet_sizeYA_KXZ) (00007ff628de110e)
+0:000> g
+consumer sizeof(Packet)=4, provider sizeof(Packet)=16
+
+mov edx,4 is main.cpp's compiled-in sizeof(Packet). mov eax,10h is provider.cpp's compiled-in sizeof(Packet). The linker accepted both.
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+  Target  |  Consumer TU  |  Provider TU  |  Meaning
+  safe  |  4  |  4  |  one layout assumption
+  unsafe  |  4  |  16  |  ODR violation, undefined behavior
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+  Command  |  Purpose
+  x <module>!*provider*  |  find the linked provider function
+  uf provider_packet_size  |  show provider's size constant
+  uf main  |  show consumer's size constant
+   bp `main.cpp:4`   |  stop before comparison output
+  dt <module>!Type  |  normally shows member offsets if type info exists
+  ?? sizeof(T)  |  normally evaluates a type when debug info exists
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+1. Add Packet local; in main.cpp and rerun dt.
+2. Define EXTRA_FIELD for both TUs and compare constants.
+3. Pass Packet by value across the function boundary and inspect generated code.
+4. Try link-time code generation and check whether a diagnostic appears.
+5. Replace the macro-controlled type with a versioned wire struct and assertions.
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+  Tool  |  Reports this trap  |  Limitation
+  CDB disassembly  |  yes  |  dt` may lack type info in tiny examples
+  Linker  |  no required diagnostic  |  accepts many ODR violations
+  Sanitizers  |  no  |  MSVC ASan is not an ODR checker
+  Tests  |  weak  |  disagreement may not be exercised

@@ -1,0 +1,167 @@
+===============================================================================
+ Trap29_RawBytes - CDB debug analysis
+===============================================================================
+
+QUESTION
+  do raw bytes become a `Record` merely because the storage has the right size and alignment?
+
+
+SHORT ANSWER
+  no. This trap demonstrates the correct protocol: `std::construct_at` begins the lifetime and `std::destroy_at` ends it. The storage remains before and after; the `Record` lifetime exists only between those calls.
+
+-------------------------------------------------------------------------------
+
+1. Read the source first
+
+
+ 1  #include <cstddef>
+ 2  #include <iostream>
+ 3  #include <memory>
+ 4  #include <string>
+ 5  struct Record { explicit Record(int n):name("record"),number(n){} std::string name; int number; };
+ 6  int main(){ alignas(Record) std::byte storage[sizeof(Record)];
+ 7      auto* candidate=reinterpret_cast<Record*>(storage);
+ 8      Record* object=std::construct_at(candidate,7); // BP
+ 9      std::cout<<object->name<<':'<<object->number<<'\n';
+10      std::destroy_at(object); // BP
+11  }
+
+
+   Entity    Meaning   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   `storage`    raw, aligned bytes; not yet a `Record`   
+   `candidate`    address where a `Record` may be constructed   
+   `object`    valid only after `construct_at` and before `destroy_at`   
+
+-------------------------------------------------------------------------------
+
+2. Build without a sanitizer
+
+Use the existing `Trap29_RawBytes.exe`. There is no `_unsafe` sibling: this is the correct raw-storage protocol, not a contrasting anti-pattern branch.
+
+-------------------------------------------------------------------------------
+
+3. Start CDB
+
+Break at lines 8, 9, and 11. `$t0` pins the storage address so the same bytes are inspected before construction, during the live lifetime, and after destruction.
+
+-------------------------------------------------------------------------------
+
+4. The safe target
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:8`
+0:000> bp `main.cpp:9`
+0:000> bp `main.cpp:11`
+0:000> g
+Breakpoint 0 hit
+Trap29_RawBytes!main+0x36:
+00007ff6`13f01996 c784248000000007000000 mov dword ptr [rsp+80h],7 ss:00000095`7bfbf940=cccccccc
+0:000> $$ STOP A raw storage before construct_at
+0:000> r $t0 = @@c++(&storage[0])
+0:000> .printf "storage address pinned in $t0 = %p\n", @$t0
+storage address pinned in $t0 = 000000957bfbf8e8
+0:000> ? @$t0 & 7
+Evaluate expression: 0 = 00000000`00000000
+0:000> ?? sizeof(storage)
+unsigned int64 0x30
+0:000> dv /t /v
+00000095`7bfbf928 struct Record * candidate = 0x00000095`7bfbf8e8
+00000095`7bfbf930 struct Record * object = 0xcccccccc`cccccccc
+00000095`7bfbf8e8 std::byte [48] storage = std::byte [48]
+0:000> db @$t0 L40
+00000095`7bfbf8e8  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+00000095`7bfbf8f8  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+00000095`7bfbf908  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+00000095`7bfbf918  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> g
+Breakpoint 1 hit
+Trap29_RawBytes!main+0x58:
+00007ff6`13f019b8 488b442470      mov     rax,qword ptr [rsp+70h] ss:00000095`7bfbf930=000000957bfbf8e8
+0:000> $$ STOP B live Record after construct_at
+0:000> dv /t /v
+00000095`7bfbf928 struct Record * candidate = 0x00000095`7bfbf8e8
+00000095`7bfbf930 struct Record * object = 0x00000095`7bfbf8e8
+00000095`7bfbf8e8 std::byte [48] storage = std::byte [48]
+0:000> ?? object->number
+int 0n7
+0:000> dt Trap29_RawBytes!Record @@c++(object)
+   +0x000 name             : std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+   +0x028 number           : 0n7
+0:000> db @$t0 L40
+00000095`7bfbf8e8  50 a2 f0 b2 c0 01 00 00-72 65 63 6f 72 64 00 00  P.......record..
+00000095`7bfbf8f8  00 00 00 00 00 00 00 00-06 00 00 00 00 00 00 00  ................
+00000095`7bfbf908  0f 00 00 00 00 00 00 00-07 00 00 00 cc cc cc cc  ................
+00000095`7bfbf918  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> g
+Breakpoint 2 hit
+Trap29_RawBytes!main+0xb7:
+00007ff6`13f01a17 33c0            xor     eax,eax
+0:000> $$ STOP C after destroy_at storage remains Record lifetime ended
+0:000> dv /t /v
+00000095`7bfbf928 struct Record * candidate = 0x00000095`7bfbf8e8
+00000095`7bfbf930 struct Record * object = 0x00000095`7bfbf8e8
+00000095`7bfbf8e8 std::byte [48] storage = std::byte [48]
+0:000> db @$t0 L40
+00000095`7bfbf8e8  00 00 00 00 00 00 00 00-00 65 63 6f 72 64 00 00  .........ecord..
+00000095`7bfbf8f8  00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................
+00000095`7bfbf908  0f 00 00 00 00 00 00 00-07 00 00 00 cc cc cc cc  ................
+00000095`7bfbf918  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> g
+record:7
+
+
+-------------------------------------------------------------------------------
+
+5. Why there is no unsafe target
+
+`Trap29_RawBytes_unsafe.exe` is absent. Trap29 demonstrates the correct protocol: show storage before construction, a live object after construction, and storage remaining after destruction while the `Record` lifetime no longer exists.
+
+-------------------------------------------------------------------------------
+
+6. What the measurements prove
+
+   Measurement    Before `construct_at`    After `construct_at`    After `destroy_at`   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   pinned address    `957bfbf8e8`    same    same   
+   `address & 7`    `0`    same    same   
+   `object` local    `0xcccc...`    storage address    stale value only   
+   typed view    invalid    `Record`, `number=7`    invalid   
+   bytes    `cc cc ...`    contains `record` and `07`    bytes remain, lifetime ended   
+
+The divergence is storage versus lifetime. Storage exists for the whole function; the `Record` exists only between the two library calls.
+
+-------------------------------------------------------------------------------
+
+7. Command reference used here
+
+   Command    Why type it   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   `r $t0 = @@c++(&storage[0])`    pin one storage address across all stops   
+   `db @$t0 L40`    inspect bytes without claiming a live object   
+   `dt Trap29_RawBytes!Record @@c++(object)`    view the live object after construction   
+   `?? object->number`    read a member while lifetime is active   
+   `? @$t0 & 7`    check the storage address alignment   
+
+-------------------------------------------------------------------------------
+
+8. Left to you
+
+1. Try `dt Record` before line 8. What can the debugger display, and what does the C++ lifetime rule allow?
+2. Use a longer string that allocates on the heap. Which bytes are in `storage`, and which are elsewhere?
+3. Omit `destroy_at` in a scratch copy and run leak diagnostics. Which resource is leaked?
+4. Construct a second `Record` in the same storage after destruction. Which bytes prove a new lifetime began?
+
+-------------------------------------------------------------------------------
+
+9. Tool limits
+
+   Tool    Reports this trap    Limitation   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   CDB    yes, as a timed byte view    will display bytes even when typed access is invalid   
+   Debug CRT fill    shows uninitialized storage    fill bytes are not language values   
+   AddressSanitizer    usually no    correct protocol has no memory error   
+   Compiler warnings    no    placement construction is intentional   
+

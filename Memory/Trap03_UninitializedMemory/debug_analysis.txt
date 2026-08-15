@@ -1,0 +1,222 @@
+===============================================================================
+ Trap03_UninitializedMemory - CDB debug analysis
+===============================================================================
+
+TRAP03_UNINITIALIZEDMEMORY - CDB DEBUG ANALYSIS
+
+QUESTION
+   if a debug session prints a repeatable bit pattern for an uninitialized object, did C++ give that object a value?
+
+SHORT ANSWER
+   no. The pattern is debugger evidence, not a language value. MSVC's warning/runtime check is the primary evidence for the scalar; Debug CRT fill bytes help explain what storage looked like in this build.
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+main.cpp (47 lines). The three variants are the automatic scalar, new Point versus new Point{}, and an aggregate that is either fully value-initialized by rules or not initialized at all.
+
+   1  #include <iostream>
+   3  // Type 1: an automatic scalar has no value until one is established.
+   4  void uninitialized_local() {
+   6      int count; // unsafe: no value has been established.
+   7      std::cout << "local: " << count << '\n'; // BP
+   9      int count{}; // safe: zero.
+  10      std::cout << "local: " << count << '\n';
+  14  // Type 2: new T default-initializes a POD; only new T{} zero-initializes it.
+  15  struct Point { int x; int y; };
+  19      Point* p = new Point; // unsafe: members indeterminate.
+  20      std::cout << "new: " << p->x << ',' << p->y << '\n'; // BP
+  23      Point* p = new Point{}; // safe: zeroes both members.
+  29  // Type 3: a partial aggregate initializer only looks complete.
+  30  struct Config { int retries; int timeout; int backoff; };
+  34      Config c; // unsafe: every member indeterminate.
+  35      std::cout << "aggregate: " << c.retries << ',' << c.timeout << ',' << c.backoff << '\n'; // BP
+  37      Config c{3}; // safe: remaining members become zero.
+  42  int main() { uninitialized_local(); default_vs_value_new(); partial_aggregate(); }
+
+  Entity    Safe invariant    Unsafe observation
+  count    value-initialized to zero    automatic storage contains no C++ value
+  Point    new Point{}` zero-initializes    new Point` leaves POD members indeterminate
+  Config    aggregate remainder is value-initialized    no initializer means no member has a value
+
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+  cmake -S . -B build\cdb -DTRAPS_BUILD_UNSAFE=ON -DTRAPS_SANITIZER=none
+  cmake --build build\cdb --config Debug --target Trap03_UninitializedMemory Trap03_UninitializedMemory_unsafe
+
+The build already exists for this lab. MSVC has AddressSanitizer, but not MemorySanitizer; uninitialized reads are primarily found by compiler warnings such as C4700, runtime checks in Debug, or Clang MemorySanitizer on a supported platform. Debug fill bytes are a CRT courtesy, not a C++ value.
+
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+  cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+         -srcpath C:\src\cpptraps42\Memory\Trap03_UninitializedMemory ^
+         C:\src\cpptraps42\build\cdb\Debug\Trap03_UninitializedMemory.exe
+
+Then enable the two settings that are off by default:
+
+  .symopt-100     resolve unqualified local names
+  .lines -e       make source-line breakpoints work
+
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+  0:000> .symopt-100
+  0:000> .lines -e
+  0:000> bp main.cpp:10
+  0:000> bp main.cpp:24
+  0:000> bp main.cpp:38
+  0:000> g
+  Breakpoint 0 hit
+  Trap03_UninitializedMemory!uninitialized_local+0xe:
+  0:000> $$ ===== uninitialized_local: initialized scalar =====
+  0:000> dv /t /v
+  000000411c2ffbf0 int count = 0n0
+  0:000> ?? count
+  int 0n0
+  0:000> db @@c++(&count) L4
+  000000411c2ffbf0  00 00 00 00                                      ....
+  0:000> g
+  Breakpoint 1 hit
+  Trap03_UninitializedMemory!default_vs_value_new+0x4f:
+  0:000> $$ ===== default_vs_value_new: value-initialized Point =====
+  0:000> dv /t /v
+  000000411c2ffbc0 struct Point * p = 0x000001931db9b270
+  0:000> ?? *p
+  struct Point
+     +0x000 x                : 0n0
+     +0x004 y                : 0n0
+  0:000> db @@c++(p) L8
+  000001931db9b270  00 00 00 00 00 00 00 00                          ........
+  0:000> g
+  Breakpoint 2 hit
+  Trap03_UninitializedMemory!partial_aggregate+0x3f:
+  0:000> $$ ===== partial_aggregate: remaining members value-initialized =====
+  0:000> dv /t /v
+  000000411c2ffbb8 struct Config c = struct Config
+  0:000> ?? c
+  struct Config
+     +0x000 retries          : 0n3
+     +0x004 timeout          : 0n0
+     +0x008 backoff          : 0n0
+  0:000> db @@c++(&c) Lc
+  000000411c2ffbb8  03 00 00 00 00 00 00 00-00 00 00 00              ............
+  0:000> g
+  local: 0
+  new: 0,0
+  aggregate: 3,0,0
+
+
+
+-------------------------------------------------------------------------------
+ 5. THE UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+  0:000> .symopt-100
+  0:000> .lines -e
+  0:000> bp main.cpp:7
+  0:000> bp main.cpp:20
+  0:000> bp main.cpp:35
+  0:000> g
+  Breakpoint 0 hit
+  Trap03_UninitializedMemory_unsafe!uninitialized_local+0x1c:
+  0:000> $$ ===== uninitialized_local: first read of indeterminate scalar =====
+  0:000> dv /t /v
+  0000000fa437f890 int count = 0n-858993460
+  0:000> db @@c++(&count) L4
+  0000000fa437f890  cc cc cc cc                                      ....
+  0:000> g
+  Trap03_UninitializedMemory_unsafe!failwithmessage+0x24a:
+  0:000> $$ ===== Debug runtime check after the invalid scalar read =====
+  0:000> dv /t /v
+  @r15              char * msg = 0x0000000fa437f450 "The variable 'count' is being used without being initialized."
+  @rsi              wchar_t * msgW = 0x0000000fa437efd0 "The variable 'count' is being used without being initialized."
+  0:000> g
+  Breakpoint 1 hit
+  Trap03_UninitializedMemory_unsafe!default_vs_value_new+0x1f:
+  0:000> $$ ===== default_vs_value_new: default-initialized Point =====
+  0:000> dv /t /v
+  0000000fa437f860 struct Point * p = 0x00000129c883b2c0
+  0:000> ?? *p
+  struct Point
+     +0x000 x                : 0n-842150451
+     +0x004 y                : 0n-842150451
+  0:000> db @@c++(p) L8
+  00000129c883b2c0  cd cd cd cd cd cd cd cd                          ........
+  0:000> g
+  Breakpoint 2 hit
+  Trap03_UninitializedMemory_unsafe!partial_aggregate+0x2e:
+  0:000> $$ ===== partial_aggregate: no initializer =====
+  0:000> dv /t /v
+  0000000fa437f848 struct Config c = struct Config
+  0:000> ?? c
+  struct Config
+     +0x000 retries          : 0n-858993460
+     +0x004 timeout          : 0n-858993460
+     +0x008 backoff          : 0n-858993460
+  0:000> db @@c++(&c) Lc
+  0000000fa437f848  cc cc cc cc cc cc cc cc-cc cc cc cc              ............
+
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+  Variant    Safe measurement    Unsafe measurement    Meaning
+  scalar    00 00 00 00` and `count = 0    runtime check: variable used without initialization    C4700/runtime check is the diagnosis; bytes are supporting evidence
+  dynamic object    two zero members    cd cd cd cd ...    Debug CRT marked newly allocated storage, not a language value
+  aggregate    3,0,0    stack `cc cc ...    no initializer leaves all automatic members indeterminate
+
+0xCD is allocated-but-uninitialized heap storage in this Debug CRT. 0xCC is the stack fill used by this MSVC debug configuration. Treat both as clues only; Release builds need not write them.
+
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+  Command    Purpose
+  .symopt-100    allow local names such as `count`, `p`, and `c
+  .lines -e    allow `` bp `main.cpp:20
+  dv /t /v    show local variables with type and address
+  ?? expr    evaluate a C++ expression
+  db addr L4    dump raw bytes
+  g    continue to the next stop
+
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+1. Rebuild only this target as Release and compare whether 0xCD or 0xCC is still visible.
+2. Remove volatile or change optimization settings and see whether the scalar remains inspectable at the same stop.
+3. Compile the unsafe source with Clang MemorySanitizer on a supported platform and compare the report to CDB's byte evidence.
+4. Change new Point to new Point{} and verify which bytes change before the print.
+5. Add Config c{3, 4}; and predict then measure only the remaining member.
+
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+  Tool    Reports this trap    Limitation
+  MSVC warning/runtime check    yes for simple scalar    not every uninitialized read is diagnosed
+  CDB + Debug fills    shows storage pattern    fill bytes are not C++ values and are Debug-only
+  AddressSanitizer    no    ASan is not MemorySanitizer
+  Release build    unreliable    optimizer may remove or transform the read

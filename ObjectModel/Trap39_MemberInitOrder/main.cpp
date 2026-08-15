@@ -2,14 +2,16 @@
 #include <vector>
 
 // Type 1: members are initialised in declaration order, whatever the init-list order says.
+#if defined(RUN_UNSAFE_EXAMPLE)
 struct Reordered {
-	int count;      // Declared first, so initialised first.
-	int doubled;    // Declared second.
+	int doubled;    // Declared first, so it is initialised first.
+	int count;      // Declared second, even though the init-list writes count first.
 	explicit Reordered(int value)
-		: doubled(count * 2) // BP: runs first? No - it runs second, but 'count' is still garbage
-		, count(value)       //     because the compiler follows declaration order, not this order.
+		: count(value)       // Textual order does not control construction order.
+		, doubled(count * 2) // BP: runs before count(value) and reads an indeterminate int -> UB.
 	{}
 };
+#endif
 
 void init_list_order_is_a_lie() {
 #if defined(RUN_UNSAFE_EXAMPLE)

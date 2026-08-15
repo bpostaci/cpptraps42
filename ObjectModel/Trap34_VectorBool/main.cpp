@@ -38,7 +38,7 @@ void better_alternatives() {
 	for (bool& b : small) { b = !b; }
 	std::cout << "array front=" << small.front() << '\n';
 
-	std::vector<char> dynamic_flags{1, 0, 1};     // Real bools with dynamic size.
+	std::vector<char> dynamic_flags{1, 0, 1};     // Addressable byte elements with dynamic size.
 	dynamic_flags.push_back(0);
 	std::cout << "vector<char> size=" << dynamic_flags.size() << '\n';
 }

@@ -1,0 +1,187 @@
+# Trap05_SignedOverflow - CDB debug analysis
+
+**Question:** when a signed arithmetic result prints as a wrapped value, is that the rule the program may rely on?
+
+**Short answer:** no. Signed overflow is undefined behavior. This source's three variants are addition past `INT_MAX`, multiplication past `int`, and negating `INT_MIN`.
+
+---
+
+## 1. Read the source first
+
+```cpp
+ 5  std::optional<int> safe_add(int a, int b) { ... return a + b; }
+14  void additive_overflow() {
+16      volatile int maximum = std::numeric_limits<int>::max();
+17      std::cout << "add: " << maximum + 1 << '\n'; // unsafe BP
+19      std::cout << "add: rejected by safe_add\n";
+24  void multiplicative_overflow() {
+25      volatile int factor = 100000;
+27      std::cout << "mul: " << factor * factor << '\n'; // unsafe BP
+29      const long long widened = static_cast<long long>(factor) * factor;
+35  void negation_overflow() {
+36      volatile int minimum = std::numeric_limits<int>::min();
+38      std::cout << "neg: " << -minimum << '\n'; // unsafe BP
+40      const long long widened = -static_cast<long long>(minimum);
+49      unsigned wrapping = std::numeric_limits<unsigned>::max();
+50      ++wrapping; // defined modulo 2^N, unlike signed overflow.
+```
+
+| Variant | Dangerous operation | Safe pattern |
+|---|---|---|
+| additive | `INT_MAX + 1` | reject before evaluating |
+| multiplicative | `100000 * 100000` in `int` | widen before multiplying |
+| negation | `-INT_MIN` | widen before negating |
+
+Mixed signed/unsigned conversion and unsigned narrowing are different categories: they can be defined but surprising. The three operations above are signed-overflow UB.
+
+---
+
+## 2. Build without a sanitizer
+
+```powershell
+cmake -S . -B build\cdb -DTRAPS_BUILD_UNSAFE=ON -DTRAPS_SANITIZER=none
+cmake --build build\cdb --config Debug --target Trap05_SignedOverflow Trap05_SignedOverflow_unsafe
+```
+
+MSVC does not provide UBSan. Use Clang UBSan when you need a runtime diagnostic for signed overflow.
+
+---
+
+## 3. Start CDB
+
+Use the same `cdb -o -y ... -srcpath ...` form, then `.symopt-100` and `.lines -e`.
+
+---
+
+## 4. The safe target
+
+```
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:19`
+0:000> bp `main.cpp:30`
+0:000> bp `main.cpp:41`
+0:000> g
+Breakpoint 0 hit
+Trap05_SignedOverflow!additive_overflow+0x6:
+0:000> $$ ===== additive_overflow: safe path rejected before addition =====
+0:000> dv /t /v
+0:000> g
+Breakpoint 1 hit
+Trap05_SignedOverflow!multiplicative_overflow+0x24:
+0:000> $$ ===== multiplicative_overflow: operands widened before multiply =====
+0:000> dv /t /v
+0000008f`f10ffb68 int64 widened = 0n10000000000
+0000008f`f10ffb60 int factor = 0n100000
+0:000> ?? factor
+int 0n100000
+0:000> ?? widened
+int64 0n10000000000
+0:000> g
+Breakpoint 2 hit
+Trap05_SignedOverflow!negation_overflow+0x1d:
+0:000> $$ ===== negation_overflow: operand widened before negation =====
+0:000> dv /t /v
+0000008f`f10ffb60 int minimum = 0n-2147483648
+0000008f`f10ffb68 int64 widened = 0n2147483648
+0:000> ?? minimum
+int 0n-2147483648
+0:000> ?? widened
+int64 0n2147483648
+0:000> g
+sum=42; unsigned wrap=0
+add: rejected by safe_add
+mul: 10000000000
+neg: 2147483648
+```
+
+---
+
+## 5. The unsafe target
+
+```
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:17`
+0:000> bp `main.cpp:27`
+0:000> bp `main.cpp:38`
+0:000> g
+Breakpoint 0 hit
+Trap05_SignedOverflow_unsafe!additive_overflow+0xf:
+0:000> $$ ===== additive_overflow: INT_MAX plus one =====
+0:000> dv /t /v
+000000c5`68f5fc80 int maximum = 0n2147483647
+0:000> ?? maximum
+int 0n2147483647
+0:000> ?? maximum + 1
+int 0n-2147483648
+0:000> g
+Breakpoint 1 hit
+Trap05_SignedOverflow_unsafe!multiplicative_overflow+0xe:
+0:000> $$ ===== multiplicative_overflow: 100000 times 100000 =====
+0:000> dv /t /v
+000000c5`68f5fc80 int factor = 0n100000
+0:000> ?? factor
+int 0n100000
+0:000> ?? factor * factor
+int 0n1410065408
+0:000> g
+Breakpoint 2 hit
+Trap05_SignedOverflow_unsafe!negation_overflow+0xf:
+0:000> $$ ===== negation_overflow: negating INT_MIN =====
+0:000> dv /t /v
+000000c5`68f5fc80 int minimum = 0n-2147483648
+0:000> ?? minimum
+int 0n-2147483648
+0:000> ?? -minimum
+int 0n-2147483648
+0:000> g
+sum=42; unsigned wrap=0
+add: -2147483648
+mul: 1410065408
+neg: -2147483648
+```
+
+---
+
+## 6. What the measurements prove
+
+| Variant | Mathematical result | `int` result observed | Rule |
+|---|---:|---:|---|
+| `INT_MAX + 1` | 2147483648 | -2147483648 | signed overflow: UB |
+| `100000 * 100000` | 10000000000 | 1410065408 | signed overflow: UB |
+| `-INT_MIN` | 2147483648 | -2147483648 | signed overflow: UB |
+| `++unsigned_max` in `main` | 2^32 | 0 | defined unsigned modulo wrap |
+
+The printed unsafe values are not permissions. They are one run's machine result after evaluating undefined behavior.
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| `?? maximum + 1` | evaluate the expression at the breakpoint |
+| `?? widened` | prove the safe expression has a representable type |
+| `dv /t /v` | inspect the volatile operands before evaluation |
+| `bp `main.cpp:N`` | stop before each arithmetic expression |
+
+---
+
+## 8. Left to you
+
+1. Build the unsafe target with Clang UBSan and compare the diagnostic wording for all three variants.
+2. Change `factor` to `30000` and predict whether multiplication still overflows.
+3. Add a mixed signed/unsigned comparison beside this code and inspect both converted operands.
+4. Change the safe multiplication to cast after multiplying; confirm that widening too late does not help.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB | shows operands and observed result | does not diagnose UB by itself |
+| MSVC AddressSanitizer | no | ASan is not UBSan |
+| Clang UBSan | yes | requires a different toolchain/build |
+| Compiler warnings | sometimes | constants are easier than runtime operands |

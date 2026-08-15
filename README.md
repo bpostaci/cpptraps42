@@ -1,10 +1,11 @@
-# C++ Traps - Visual Studio CMake Training Project
+# C++ Traps 42 - Visual Studio CMake Training Project
 
 Each of the 42 canonical traps is a separate executable target and lives in its own clearly named folder. Selected labs contain several closely related real-world variants without changing the book's canonical trap structure. The repository is a native CMake project; generated solution and project files are build artifacts and are intentionally ignored by Git.
 
 **Document version:** 2.0.0  
-**Publication date:** 14 August 2026  
+**Publication date:** 15 August 2026
 **Author:** Buğra POSTACI · Software Engineer · Debugging Specialist
+**Repository:** https://github.com/bpostaci/cpptraps42
 
 Traps 01-30 form the original canonical set. Traps 31-42 extend it with the everyday standard-library, class-design, and parsing mistakes that practising C++ engineers report most often.
 

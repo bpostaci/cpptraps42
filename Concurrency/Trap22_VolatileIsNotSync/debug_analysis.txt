@@ -1,0 +1,176 @@
+# Trap22_VolatileIsNotSync - CDB debug analysis
+
+Question: does `volatile bool ready` synchronize a payload between threads?
+
+Short answer: no. `volatile` is not a C++ synchronization primitive. CDB can show the release/acquire shape in the safe target and the missing guarantee in the unsafe target, but it is not a detector. Use ThreadSanitizer with Clang on Linux or WSL; MSVC has ASan only, not TSan or MSan.
+
+---
+
+## 1. Read the source first
+
+
+ 6      int payload = 0;
+ 8      volatile bool ready = false; // anti-pattern
+ 9      std::jthread writer([&] { payload = 42; ready = true; });
+11          while (!ready) { std::this_thread::yield(); }
+12          std::cout << payload << '\n'; // data race; use TSan
+15      std::atomic<bool> ready{false};
+18          ready.store(true, std::memory_order_release); // release publishes payload
+21          while (!ready.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+22          std::cout << payload << '\n';
+
+
+| Entity | Safe target | Unsafe target |
+|---|---|---|
+| flag | `std::atomic<bool>` | `volatile bool` |
+| publish | release store | ordinary volatile write |
+| observe | acquire load | ordinary volatile read |
+| payload | happens-before protected | data race |
+
+---
+
+## 2. Build without a sanitizer
+
+Use the existing `build\cdb\Debug` binaries. Do not clean or rebuild. MSVC's sanitizer support does not include TSan or MSan.
+
+---
+
+## 3. Start CDB
+
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+  -srcpath C:\src\cpptraps42\Concurrency\Trap22_VolatileIsNotSync ^
+  C:\src\cpptraps42\build\cdb\Debug\Trap22_VolatileIsNotSync.exe
+
+
+Run `.symopt-100` and `.lines -e` first. `!locks` was tested and omitted because it needs unavailable `ntdll` symbols.
+
+---
+
+## 4. The safe target
+
+Break on the release store, the acquire load, and the payload read.
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:18`
+0:000> g
+Breakpoint 0 hit
+Trap22_VolatileIsNotSync!`main'::`2'::<lambda_1>::operator()+0x18:
+00007ff6`380a1958 488b442440      mov     rax,qword ptr [rsp+40h] ss:000000bb`cc1ffe30=0000020d403a3f10
+0:004> $$ SAFE release: writer has stored payload and is about to publish ready with memory_order_release
+0:004> ?? ready
+struct std::atomic<bool> * 0x000000bb`cbbdfc04
+   +0x000 _Storage         : std::_Atomic_padded<bool>
+0:004> k
+Child-SP          RetAddr               Call Site
+000000bb`cc1ffdf0 00007ff6`380a2cd4     Trap22_VolatileIsNotSync!`main'::`2'::<lambda_1>::operator()+0x18 [C:\src\cpptraps42\Concurrency\Trap22_VolatileIsNotSync\main.cpp @ 18]
+
+
+
+0:004> bp `main.cpp:21`
+0:004> bp `main.cpp:22`
+0:004> g
+Breakpoint 1 hit
+Trap22_VolatileIsNotSync!`main'::`2'::<lambda_2>::operator()+0xa:
+00007ff6`380a19da 488b442440      mov     rax,qword ptr [rsp+40h] ss:000000bb`cc2ffc20=0000020d403a3cb0
+0:005> $$ SAFE acquire: reader is evaluating memory_order_acquire load
+0:005> k
+Child-SP          RetAddr               Call Site
+000000bb`cc2ffbe0 00007ff6`380a2d04     Trap22_VolatileIsNotSync!`main'::`2'::<lambda_2>::operator()+0xa [C:\src\cpptraps42\Concurrency\Trap22_VolatileIsNotSync\main.cpp @ 21]
+
+
+
+0:005> g
+Breakpoint 1 hit
+Trap22_VolatileIsNotSync!`main'::`2'::<lambda_2>::operator()+0x35:
+00007ff6`380a1a05 488b442440      mov     rax,qword ptr [rsp+40h] ss:00000093`471ffaa0=000001bba846f450
+0:005> $$ SAFE reader capture object at payload print
+0:005> ?? *this
+class main::__l2::<lambda_2>
+   +0x000 ready            : 0x00000093`46cff994 std::atomic<bool>
+   +0x008 payload          : 0x00000093`46cff974  -> 0n42
+
+
+---
+
+## 5. The unsafe target
+
+The unsafe target often prints `42`; that is only one schedule. There is no acquire/release edge.
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:8`
+0:000> g
+Breakpoint 0 hit
+Trap22_VolatileIsNotSync_unsafe!main+0x22:
+00007ff6`4f041852 c644244400      mov     byte ptr [rsp+44h],0 ss:000000d4`6c4ff874=cc
+0:000> $$ UNSAFE main: volatile flag and payload before the threads start
+0:000> dv /t /v
+000000d4`6c4ff854 int payload = 0n0
+000000d4`6c4ff898 class std::jthread writer = { id=0xcccccccc }
+000000d4`6c4ff874 bool ready = true
+000000d4`6c4ff8c8 class std::jthread reader = { id=0xcccccccc }
+0:000> r $t0 = @@c++(&ready)
+0:000> r $t1 = @@c++(&payload)
+0:000> .printf "ready address = %p, payload address = %p\n", @$t0, @$t1
+ready address = 000000d46c4ff874, payload address = 000000d46c4ff854
+
+
+
+0:005> ?? *this
+class main::__l2::<lambda_1>
+   +0x000 payload          : 0x000000d4`6c4ff854  -> 0n42
+   +0x008 ready            : 0x000000d4`6c4ff874  -> 1
+0:005> dd @$t1 L1
+000000d4`6c4ff854  0000002a
+0:005> g
+Breakpoint 3 hit
+Trap22_VolatileIsNotSync_unsafe!`main'::`2'::<lambda_2>::operator()+0x24:
+00007ff6`4f041984 488b442430      mov     rax,qword ptr [rsp+30h] ss:000000d4`6c9ffe70=000002a04464e8e0
+
+
+MSVC's legacy `/volatile:ms` behavior is not portable C++ synchronization and must not be relied on.
+
+---
+
+## 6. What the measurements prove
+
+The safe target has an explicit release store and acquire load; the reader sees payload `42` through that edge. The unsafe target shows plain addresses and volatile state, not synchronization. A successful debugger run proves nothing about thread safety.
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| `bp `main.cpp:18`` | release store |
+| `bp `main.cpp:21`` | acquire load |
+| `bp `main.cpp:22`` | payload read |
+| `?? ready` | inspect flag type |
+| `?? *this` | inspect lambda captures |
+| `dd @$t1 L1` | dump payload word |
+| `~`, `k` | thread and stack context |
+
+---
+
+## 8. Left to you
+
+1. Run the unsafe binary many times outside CDB.
+2. Build an equivalent WSL/Clang TSan example.
+3. Replace acquire/release with relaxed and explain the lost guarantee.
+4. Compare `/volatile:iso` and `/volatile:ms` assembly without relying on either.
+5. Add a second payload field and reason about publication.
+
+---
+
+## 9. Tool limits
+
+| Tool | Use here | Limitation |
+|---|---|---|
+| CDB | explains locations and captures | not a race detector |
+| MSVC ASan | memory bugs | no TSan/MSan in MSVC |
+| TSan | primary race detector | Clang/Linux or WSL |
+| `volatile` | special object access | not synchronization |

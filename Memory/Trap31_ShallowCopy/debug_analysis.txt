@@ -1,0 +1,286 @@
+===============================================================================
+ Trap31_ShallowCopy - CDB debug analysis
+===============================================================================
+
+
+QUESTION
+  if a copied object prints the same text as the original, does that prove the copy owns its own resource?
+
+
+SHORT ANSWER
+  no. The raw pointer member must be inspected in both objects. Identical pointer values mean two owners and two delete[] calls. The Rule of Three and Rule of Zero variants show the two standard repairs.
+
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+
+main.cpp (75 lines). Three variants run in sequence.
+
+ 7  static char* duplicate(const char* text) {
+ 9      char* copy = new char[length];
+10      std::memcpy(copy, text, length);
+11      return copy;
+15  struct Broken {
+16      char* data;
+17      explicit Broken(const char* text) : data(duplicate(text)) {}
+18      ~Broken() { delete[] data; } // BP: destructor exists, but copy/assignment were never declared.
+21  void shallow_copy_double_free() {
+23      Broken a{"owned"};
+24      Broken b = a;  // BP: implicit copy duplicates the pointer, not the buffer.
+25      std::cout << "shallow: " << b.data << '\n';
+33  class RuleOfThree {
+35      explicit RuleOfThree(const char* text) : data_(duplicate(text)) {}
+36      RuleOfThree(const RuleOfThree& other) : data_(duplicate(other.data_)) {}
+39      RuleOfThree& operator=(RuleOfThree other) { std::swap(data_, other.data_); return *this; }
+43      ~RuleOfThree() { delete[] data_; }
+57  class RuleOfZero {
+59      explicit RuleOfZero(std::string text) : data_(std::move(text)) {}
+62      std::string data_; // The member owns the memory; no destructor, copy or assignment needed.
+
+  Variant                       Ownership model               Expected pointer evidence
+  Broken                        raw owning pointer with generated copy  a.data == b.data in unsafe build
+  Rule of Three                 raw owning pointer with copy constructor/destructor/assignment  two different data_ addresses
+  Rule of Zero                  owning standard-library member  no raw owning pointer in the class
+
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+
+cmake -S . -B build\cdb -DTRAPS_BUILD_UNSAFE=ON -DTRAPS_SANITIZER=none
+cmake --build build\cdb --config Debug --target Trap31_ShallowCopy Trap31_ShallowCopy_unsafe
+
+The debugger is the right first tool because this trap is about object design and ownership. ASan can diagnose the eventual double free, but it does not explain why the class design created two owners.
+
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+       -srcpath C:\src\cpptraps42\Memory\Trap31_ShallowCopy ^
+       C:\src\cpptraps42\build\cdb\Debug\Trap31_ShallowCopy.exe
+
+Start every session with .symopt-100 and .lines -e so CDB can resolve local names and source lines.
+
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:28
+0:000> bp main.cpp:52
+0:000> bp main.cpp:68
+0:000> g
+Breakpoint 0 hit
+Trap31_ShallowCopy!shallow_copy_double_free+0x6:
+00007ff710a81ad6 488d15f3d20000  lea     rdx,[Trap31_ShallowCopy!__xt_z+0x330 (00007ff710a8edd0)]
+0:000> $$ ===== shallow_copy_double_free safe: unsafe variant is not compiled =====
+0:000> dv /t /v
+0:000> g
+Breakpoint 1 hit
+Trap31_ShallowCopy!deep_copy_is_safe+0x3c:
+00007ff710a81b3c 488d442458      lea     rax,[rsp+58h]
+0:000> $$ ===== deep_copy_is_safe: Rule of Three made two buffers =====
+0:000> dv /t /v
+000000ef278ffc98 class RuleOfThree b = class RuleOfThree
+000000ef278ffc78 class RuleOfThree a = class RuleOfThree
+0:000> dqs @@c++(&a) L1
+000000ef278ffc78  0000026156a55f60
+0:000> dqs @@c++(&b) L1
+000000ef278ffc98  0000026156a56f20
+0:000> ?? *(char)@@c++(&a)
+char * 0x0000026156a55f60
+ "owned"
+0:000> ?? *(char)@@c++(&b)
+char * 0x0000026156a56f20
+ "owned"
+0:000> da poi(@@c++(&a))
+0000026156a55f60  "owned"
+0:000> da poi(@@c++(&b))
+0000026156a56f20  "owned"
+0:000> g
+Breakpoint 2 hit
+Trap31_ShallowCopy!rule_of_zero+0x7b:
+00007ff710a81c9b 488d159ed10000  lea     rdx,[Trap31_ShallowCopy!__xt_z+0x3a0 (00007ff710a8ee40)]
+0:000> $$ ===== rule_of_zero: member owns its own string state =====
+0:000> dv /t /v
+000000ef278ffc58 class RuleOfZero b = class RuleOfZero
+000000ef278ffc18 class RuleOfZero a = class RuleOfZero
+0:000> ?? a
+class RuleOfZero
+   +0x000 data_            : std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+0:000> ?? b
+class RuleOfZero
+   +0x000 data_            : std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+0:000> ?? b.data_._Mypair._Myval2._Mysize
+unsigned int64 5
+0:000> g
+shallow: skipped (declares a destructor but no copy -> Rule of Three violation)
+deep: owned / owned
+zero: owned
+ntdll!NtTerminateProcess+0x14:
+00007ffca0500904 c3              ret
+
+The safe target refuses to compile the broken raw-owner copy path. The Rule of Three variant shows different buffer addresses holding equal text. The Rule of Zero variant shows a std::string member, not a raw owner maintained by the class itself.
+
+
+
+-------------------------------------------------------------------------------
+ 5. THE UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+
+The broken first variant can double-free at scope exit, so the safe variants inside the unsafe executable were captured in a separate session by skipping the first call.
+
+### Variant 1: implicit shallow copy of Broken
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:25
+0:000> g
+Breakpoint 0 hit
+Trap31_ShallowCopy_unsafe!shallow_copy_double_free+0x33:
+00007ff73b751b13 488d15b6d20000  lea     rdx,[Trap31_ShallowCopy_unsafe!__xt_z+0x330 (00007ff73b75edd0)]
+0:000> $$ ===== shallow_copy_double_free unsafe: implicit copy made two owners =====
+0:000> dv /t /v
+000000ab844ff9a8 struct Broken b = struct Broken
+000000ab844ff988 struct Broken a = struct Broken
+0:000> ?? a.data
+char * 0x000001f49b4670a0
+ "owned"
+0:000> ?? b.data
+char * 0x000001f49b4670a0
+ "owned"
+0:000> dqs @@c++(&a) L1
+000000ab844ff988  000001f49b4670a0
+0:000> dqs @@c++(&b) L1
+000000ab844ff9a8  000001f49b4670a0
+0:000> da @@c++(a.data)
+000001f49b4670a0  "owned"
+0:000> da @@c++(b.data)
+000001f49b4670a0  "owned"
+
+The text is correct in both objects because both pointers refer to the same allocation. That is the failure, not a success.
+
+### Variant 2: Rule of Three in the unsafe executable
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:72
+0:000> bp main.cpp:52
+0:000> bp main.cpp:68
+0:000> g
+Breakpoint 0 hit
+Trap31_ShallowCopy_unsafe!main+0x6:
+00007ff73b751db6 e8f6f5ffff      call    Trap31_ShallowCopy_unsafe!ILT+940(?shallow_copy_double_freeYAXXZ) (00007ff73b7513b1)
+0:000> $$ ===== skip shallow unsafe variant in this capture =====
+0:000> r @rip = Trap31_ShallowCopy_unsafe!main+0xb
+0:000> g
+Breakpoint 1 hit
+Trap31_ShallowCopy_unsafe!deep_copy_is_safe+0x3c:
+00007ff73b751bbc 488d442458      lea     rax,[rsp+58h]
+0:000> $$ ===== deep_copy_is_safe unsafe target: Rule of Three still makes two buffers =====
+0:000> dv /t /v
+0000006a63aff648 class RuleOfThree b = class RuleOfThree
+0000006a63aff628 class RuleOfThree a = class RuleOfThree
+0:000> dqs @@c++(&a) L1
+0000006a63aff628  000002392a662090
+0:000> dqs @@c++(&b) L1
+0000006a63aff648  000002392a65abc0
+0:000> da poi(@@c++(&a))
+000002392a662090  "owned"
+0:000> da poi(@@c++(&b))
+000002392a65abc0  "owned"
+
+### Variant 3: Rule of Zero in the unsafe executable
+
+0:000> g
+Breakpoint 2 hit
+Trap31_ShallowCopy_unsafe!rule_of_zero+0x7b:
+00007ff73b751d1b 488d15d6d00000  lea     rdx,[Trap31_ShallowCopy_unsafe!__xt_z+0x358 (00007ff73b75edf8)]
+0:000> $$ ===== rule_of_zero unsafe target: no raw owning member =====
+0:000> dv /t /v
+0000006a63aff608 class RuleOfZero b = class RuleOfZero
+0000006a63aff5c8 class RuleOfZero a = class RuleOfZero
+0:000> ?? a
+class RuleOfZero
+   +0x000 data_            : std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+0:000> ?? b
+class RuleOfZero
+   +0x000 data_            : std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+0:000> ?? b.data_._Mypair._Myval2._Mysize
+unsigned int64 5
+0:000> g
+deep: owned / owned
+zero: owned
+ntdll!NtTerminateProcess+0x14:
+00007ffca0500904 c3              ret
+
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+
+  Variant                       Address evidence              Interpretation
+  Broken unsafe                 a.data and b.data are both 1f49b4670a0  two owners, two future delete[] calls
+  Rule of Three                 a and b store different char* values  value copy duplicates the buffer, not the pointer
+  Rule of Zero                  RuleOfZero contains std::string data_  ownership is delegated to a correct member
+
+Addresses differ every run. Do not compare digits across captures; compare whether two owners inside the same capture hold identical or different addresses.
+
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+
+  Command                       Purpose
+  .symopt-100, .lines -e        resolve local names and line breakpoints
+   bp main.cpp:25               stop after the shallow copy and before destruction
+  dqs @@c++(&a) L1              dump the raw pointer member at offset zero
+  ?? a.data                     evaluate the raw member by name
+  da address                    display the pointed-to character buffer
+  r @rip = module!main+offset   skip a crashing earlier variant in a separate capture
+  ?? a                          show that Rule of Zero contains a std::string member
+
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+
+1. Let the unsafe shallow variant continue. Does the process stop at the first destructor or the second, and what message appears?
+2. Add a copy-assignment use of Broken. Does the same pointer duplication appear without constructing a new object?
+3. Add move operations to RuleOfThree. Which addresses change after a move, and which object is left empty?
+4. Replace std::string in Rule of Zero with std::unique_ptr<char[]>. What copy operation becomes unavailable, and why is that safer than a shallow copy?
+5. Run the ASan unsafe target. Compare the sanitizer report with the earlier CDB evidence of identical raw pointers.
+
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+
+  Tool                          Reports this trap             Limitation
+  CDB                           yes, by comparing raw member addresses  requires you to know which member owns the resource
+  AddressSanitizer              yes, at double free           reports the symptom after ownership has already gone wrong
+  Compiler                      partial                       generated copy is legal unless special members are deleted or made correct
+  Debug CRT fills               sometimes                     not needed for the main proof and not portable

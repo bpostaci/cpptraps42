@@ -1,0 +1,201 @@
+===============================================================================
+ Trap12_ObjectSlicing - CDB debug analysis
+===============================================================================
+
+QUESTION
+  when a `Derived` is copied into a `Base`, is anything corrupt?
+
+
+SHORT ANSWER
+  no. Slicing is defined behavior. The Base subobject is copied into a new `Base` object; the derived portion is not part of the destination. CDB shows this as a vfptr change from `Derived::vftable` to `Base::vftable`.
+
+-------------------------------------------------------------------------------
+
+1. Read the source first
+
+ 5  struct Base { virtual ~Base()=default; virtual void type() const {std::cout<<"Base\n";} };
+ 6  struct Derived: Base { void type() const override {std::cout<<"Derived\n";} };
+ 9  void copy_slicing() {
+10      Derived d;
+11      Base sliced = d; // BP: only Base subobject is copied.
+12      std::cout << "copy: "; sliced.type();
+13      const Base& polymorphic = d;
+14      std::cout << "reference: "; polymorphic.type();
+18  void container_slicing() {
+20      std::vector<Base> values;
+21      values.push_back(Derived{}); // unsafe target: value insertion slices.
+24      std::vector<std::unique_ptr<Base>> values;
+25      values.push_back(std::make_unique<Derived>()); // safe target: store handles.
+31  void print_by_value(Base b) { std::cout << "by value: "; b.type(); }
+32  void print_by_reference(const Base& b) { std::cout << "by reference: "; b.type(); }
+
+     Variant      Safe path      Unsafe teaching path     
+    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    
+     copy initialization      also shows `const Base&`      same defined slice     
+     base container      `vector<unique_ptr<Base>>`      `vector<Base>` slices elements     
+     parameter      `const Base&`      `Base` by value slices at call boundary     
+
+`Derived` adds no data member in this source; the observable derived part is the vfptr/dynamic dispatch.
+
+-------------------------------------------------------------------------------
+
+2. Build without a sanitizer
+
+This uses the existing `Trap12_ObjectSlicing.exe` and `Trap12_ObjectSlicing_unsafe.exe`. Sanitizers are not expected to report slicing because slicing is defined behavior.
+
+-------------------------------------------------------------------------------
+
+3. Start CDB
+
+Use `cdb -o -y C:\src\cpptraps42\build\cdb\Debug -srcpath C:\src\cpptraps42\ObjectModel\Trap12_ObjectSlicing ...`, then run `.symopt-100` and `.lines -e`.
+
+-------------------------------------------------------------------------------
+
+4. The safe target
+
+0:000> dt Trap12_ObjectSlicing!Base
+   +0x000 __VFN_table : Ptr64 
+0:000> dt Trap12_ObjectSlicing!Derived
+   +0x000 __VFN_table : Ptr64 
+0:000> bp Trap12_ObjectSlicing!copy_slicing+0x32
+0:000> bp Trap12_ObjectSlicing!copy_slicing+0x59
+0:000> bp Trap12_ObjectSlicing!container_slicing+0x74
+0:000> bp Trap12_ObjectSlicing!print_by_reference+0x1d
+0:000> g
+Breakpoint 0 hit
+Trap12_ObjectSlicing!copy_slicing+0x32:
+00007ff7`61521ac2 488d15bbc10000  lea     rdx,[Trap12_ObjectSlicing!__xt_z+0x1e4 (00007ff7`6152dc84)]
+0:000> $$ ===== STOP A: copy variant after Base sliced = d =====
+0:000> dps @@c++(&d) L1
+00000049`4d2ff628  00007ff7`6152e4e8 Trap12_ObjectSlicing!Derived::`vftable'
+0:000> dps @@c++(&sliced) L1
+00000049`4d2ff648  00007ff7`6152e4c0 Trap12_ObjectSlicing!Base::`vftable'
+0:000> dt Trap12_ObjectSlicing!Base @@c++(&sliced)
+   +0x000 __VFN_table : 0x00007ff7`6152e4c0 
+0:000> g
+Breakpoint 1 hit
+Trap12_ObjectSlicing!copy_slicing+0x59:
+00007ff7`61521ae9 488d15a0c10000  lea     rdx,[Trap12_ObjectSlicing!__xt_z+0x1f0 (00007ff7`6152dc90)]
+0:000> dv /t /v
+00000049`4d2ff628 struct Derived d = struct Derived
+00000049`4d2ff648 struct Base sliced = struct Base
+00000049`4d2ff658 struct Base * polymorphic = 0x00000049`4d2ff628
+0:000> g
+Breakpoint 2 hit
+Trap12_ObjectSlicing!container_slicing+0x74:
+00007ff7`61521bb4 488d15e5c00000  lea     rdx,[Trap12_ObjectSlicing!__xt_z+0x200 (00007ff7`6152dca0)]
+0:000> $$ ===== STOP: safe container stores a unique_ptr element =====
+0:000> dqs @@c++(&values) L4
+0000000e`346ff5f8  0000011d`9a6b9850
+0000000e`346ff600  0000011d`9a6c24a0
+0000000e`346ff608  0000011d`9a6c24a8
+0000000e`346ff610  0000011d`9a6c24a8
+0:000> dqs @$t0 L1
+0000011d`9a6c24a0  0000011d`9a6c0ab0
+0:000> dps poi(@$t0) L1
+0000011d`9a6c0ab0  00007ff7`6152e4e8 Trap12_ObjectSlicing!Derived::`vftable'
+0:000> g
+Breakpoint 3 hit
+Trap12_ObjectSlicing!print_by_reference+0x1d:
+00007ff7`61521c7d 488b442430      mov     rax,qword ptr [rsp+30h] ss:00000049`4d2ff620=000000494d2ff648
+0:000> dps poi(@rsp+30) L1
+00000049`4d2ff648  00007ff7`6152e4e8 Trap12_ObjectSlicing!Derived::`vftable'
+0:000> g
+copy: Base
+reference: Derived
+container: Derived
+by reference: Derived
+
+-------------------------------------------------------------------------------
+
+5. The unsafe target
+
+0:000> dt Trap12_ObjectSlicing_unsafe!Base
+   +0x000 __VFN_table : Ptr64 
+0:000> dt Trap12_ObjectSlicing_unsafe!Derived
+   +0x000 __VFN_table : Ptr64 
+0:000> bp Trap12_ObjectSlicing_unsafe!copy_slicing+0x32
+0:000> bp Trap12_ObjectSlicing_unsafe!container_slicing+0x6a
+0:000> bp Trap12_ObjectSlicing_unsafe!parameter_slicing+0x40
+0:000> bp Trap12_ObjectSlicing_unsafe!print_by_value+0x1d
+0:000> g
+Breakpoint 0 hit
+Trap12_ObjectSlicing_unsafe!copy_slicing+0x32:
+00007ff6`516b19e2 488d15c7c10000  lea     rdx,[Trap12_ObjectSlicing_unsafe!__xt_z+0x110 (00007ff6`516bdbb0)]
+0:000> dps @@c++(&d) L1
+00000060`5636f728  00007ff6`516be4d8 Trap12_ObjectSlicing_unsafe!Derived::`vftable'
+0:000> dps @@c++(&sliced) L1
+00000060`5636f748  00007ff6`516be4b0 Trap12_ObjectSlicing_unsafe!Base::`vftable'
+0:000> g
+Breakpoint 1 hit
+Trap12_ObjectSlicing_unsafe!container_slicing+0x6a:
+00007ff6`516b1aca 488d15f7c00000  lea     rdx,[Trap12_ObjectSlicing_unsafe!__xt_z+0x128 (00007ff6`516bdbc8)]
+0:000> dqs @@c++(&values) L4
+00000060`5636f708  000001d9`4b55aa10
+00000060`5636f710  000001d9`4b560e50
+00000060`5636f718  000001d9`4b560e58
+00000060`5636f720  000001d9`4b560e58
+0:000> dps @$t0 L1
+000001d9`4b560e50  00007ff6`516be4b0 Trap12_ObjectSlicing_unsafe!Base::`vftable'
+0:000> g
+Breakpoint 2 hit
+Trap12_ObjectSlicing_unsafe!parameter_slicing+0x40:
+00007ff6`516b1bf0 488b4c2448      mov     rcx,qword ptr [rsp+48h] ss:00000060`5636f758=000000605636f748
+0:000> dps @rsp+28 L1
+00000060`5636f738  00007ff6`516be4d8 Trap12_ObjectSlicing_unsafe!Derived::`vftable'
+0:000> dps @rsp+38 L1
+00000060`5636f748  00007ff6`516be4b0 Trap12_ObjectSlicing_unsafe!Base::`vftable'
+0:000> g
+Breakpoint 3 hit
+Trap12_ObjectSlicing_unsafe!print_by_value+0x1d:
+00007ff6`516b1b4d 488b4c2430      mov     rcx,qword ptr [rsp+30h] ss:00000060`5636f710=000000605636f748
+0:000> dps poi(@rsp+30) L1
+00000060`5636f748  00007ff6`516be4b0 Trap12_ObjectSlicing_unsafe!Base::`vftable'
+0:000> g
+copy: Base
+reference: Derived
+container: Base
+by value: Base
+
+-------------------------------------------------------------------------------
+
+6. What the measurements prove
+
+     Variant      Before      After copy/storage/call      Lesson     
+    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    
+     copy initialization      `d` has `Derived::vftable`      `sliced` has `Base::vftable`      a new Base object was made     
+     base container      safe target stores a pointer to `Derived::vftable`      unsafe target stores a `Base::vftable` element      `vector<Base>` cannot hold a dynamic Derived object by value     
+     parameter      caller's `d` has `Derived::vftable`      by-value `b` has `Base::vftable`      slicing occurs at the call boundary     
+
+Nothing is corrupt. The destination type simply has no derived dynamic state.
+
+-------------------------------------------------------------------------------
+
+7. Command reference used here
+
+     Command      Why it was used     
+    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    
+     `dt Base` / `dt Derived`      show that this lab's `Derived` adds behavior, not data     
+     `dps object L1`      resolve vfptrs to `Base::vftable` or `Derived::vftable`     
+     `dqs &values L4`      inspect MSVC vector control pointers     
+     `k`      useful for parameter variant call-boundary checks     
+
+-------------------------------------------------------------------------------
+
+8. Left to you
+
+1. Add an `int tag` to `Derived` in a scratch copy. Which `dt` output proves it is absent from `Base sliced`?
+2. Replace `vector<Base>` with `vector<Derived>` and compare the first element vfptr.
+3. Break in `Base::type` and `Derived::type`. Which calls enter each body?
+4. Change `print_by_reference` to take `Base&&`. Does that slice?
+
+-------------------------------------------------------------------------------
+
+9. Tool limits
+
+     Tool      Reports this trap      Limitation     
+    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    -------------------------------------------------------------------------------    
+     CDB `dps`      yes      shows dynamic dispatch state, not a language warning     
+     Sanitizers      no      slicing is defined behavior     
+     Compiler warnings      sometimes      not guaranteed for container or parameter cases     
+     Tests      maybe      only if expected dynamic output is asserted     

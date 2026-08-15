@@ -1,0 +1,193 @@
+# Trap26_StaticInitOrder - CDB debug analysis
+
+**Question:** may a global in one translation unit read a dynamically initialized global from another during static initialization?  
+**Short answer:** no. Cross-translation-unit dynamic initialization order is unspecified. This build happens to run the provider initializer first; the safe target avoids the dependency with construct-on-first-use.
+
+---
+
+## 1. Read the source first
+
+Directory contents: `config.cpp`, `dependent.cpp`, `main.cpp`, `state.hpp`.
+
+`state.hpp`:
+```cpp
+ 1  #pragma once
+ 2  struct Configuration { int value; Configuration(); };
+ 3  extern Configuration global_configuration;
+ 4  extern int copied_during_static_initialization;
+ 5  const Configuration& safe_configuration();
+```
+
+`config.cpp`:
+```cpp
+ 1  #include "state.hpp"
+ 2  Configuration::Configuration() : value(42) {}
+ 3  Configuration global_configuration; // Dynamic initialization in this translation unit.
+ 4  const Configuration& safe_configuration() {
+ 5      static const Configuration value; // Construct-on-first-use establishes dependency order.
+ 6      return value;
+ 7  }
+```
+
+`dependent.cpp`:
+```cpp
+ 1  #include "state.hpp"
+ 2  // ANTI-PATTERN: reads a dynamically initialized object from another translation unit.
+ 3  // Whether global_configuration has already run its constructor is not a portable dependency.
+ 4  int copied_during_static_initialization = global_configuration.value;
+```
+
+`main.cpp`:
+```cpp
+ 1  #include "state.hpp"
+ 2  #include <iostream>
+ 3  int main() {
+ 4  #if defined(RUN_UNSAFE_EXAMPLE)
+ 5      std::cout << "cross-TU copied value=" << copied_during_static_initialization << '\n'; // BP: link order may matter.
+ 6  #else
+ 7      std::cout << "first-use value=" << safe_configuration().value << '\n';
+ 8  #endif
+ 9  }
+```
+
+---
+
+## 2. Build without a sanitizer
+
+```powershell
+cmake --build build\cdb --config Debug --target Trap26_StaticInitOrder Trap26_StaticInitOrder_unsafe
+```
+
+No sanitizer diagnoses unspecified initialization order. Use CDB to observe which initializer runs first.
+
+---
+
+## 3. Start CDB
+
+```powershell
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug -srcpath C:\src\cpptraps42\ABI_Build\Trap26_StaticInitOrder C:\src\cpptraps42\build\cdb\Debug\Trap26_StaticInitOrder.exe
+```
+
+Use `.symopt-100` and `.lines -e`.
+
+---
+
+## 4. The safe target
+
+```text
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bm Trap26_StaticInitOrder!Configuration::Configuration
+  0: 00007ff6`67722740 @!"Trap26_StaticInitOrder!Configuration::Configuration"
+0:000> bp `main.cpp:7`
+0:000> g
+Breakpoint 0 hit
+Trap26_StaticInitOrder!Configuration::Configuration:
+00007ff6`67722740 48894c2408      mov     qword ptr [rsp+8],rcx ss:000000b9`9e0ff630=bc18c41000000000
+0:000> k
+Child-SP          RetAddr               Call Site
+000000b9`9e0ff628 00007ff6`677215b2     Trap26_StaticInitOrder!Configuration::Configuration [C:\src\cpptraps42\ABI_Build\Trap26_StaticInitOrder\config.cpp @ 2]
+000000b9`9e0ff630 00007ffc`437324f8     Trap26_StaticInitOrder!`dynamic initializer for 'global_configuration''+0x12
+0:000> g
+Breakpoint 1 hit
+Trap26_StaticInitOrder!main+0x6:
+00007ff6`677227f6 488d1523960000  lea     rdx,[Trap26_StaticInitOrder!__xt_z+0x250 (00007ff6`6772be20)]
+0:000> g
+Breakpoint 0 hit
+Trap26_StaticInitOrder!Configuration::Configuration:
+00007ff6`67722740 48894c2408      mov     qword ptr [rsp+8],rcx ss:000000b9`9e0ff5e0={Trap26_StaticInitOrder!$TSS0 (00007ff6`6772f238)}
+0:000> k
+Child-SP          RetAddr               Call Site
+000000b9`9e0ff5d8 00007ff6`677227ac     Trap26_StaticInitOrder!Configuration::Configuration [C:\src\cpptraps42\ABI_Build\Trap26_StaticInitOrder\config.cpp @ 2]
+000000b9`9e0ff5e0 00007ff6`67722813     Trap26_StaticInitOrder!safe_configuration+0x4c [C:\src\cpptraps42\ABI_Build\Trap26_StaticInitOrder\config.cpp @ 5]
+000000b9`9e0ff610 00007ff6`67723e79     Trap26_StaticInitOrder!main+0x23 [C:\src\cpptraps42\ABI_Build\Trap26_StaticInitOrder\main.cpp @ 7]
+0:000> g
+first-use value=42
+```
+
+The function-local static is constructed when `safe_configuration()` is called, so the dependency is local and ordered.
+
+---
+
+## 5. The unsafe target
+
+```text
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bm Trap26_StaticInitOrder_unsafe!*dynamic*initializer*global_configuration*
+  0: 00007ff7`20af15a0 @!"Trap26_StaticInitOrder_unsafe!`dynamic initializer for 'global_configuration''"
+0:000> bm Trap26_StaticInitOrder_unsafe!*dynamic*initializer*copied_during_static_initialization*
+  1: 00007ff7`20af15c0 @!"Trap26_StaticInitOrder_unsafe!`dynamic initializer for 'copied_during_static_initialization''"
+0:000> bp `main.cpp:5`
+0:000> g
+Breakpoint 0 hit
+Trap26_StaticInitOrder_unsafe!`dynamic initializer for 'global_configuration'':
+00007ff7`20af15a0 4057            push    rdi
+0:000> k
+Child-SP          RetAddr               Call Site
+00000039`1353fd58 00007ffc`47b324f8     Trap26_StaticInitOrder_unsafe!`dynamic initializer for 'global_configuration''
+00000039`1353fd60 00007ff7`20af3c7b     ucrtbased_7ffc47a90000!initterm+0x58
+0:000> g
+Breakpoint 1 hit
+Trap26_StaticInitOrder_unsafe!`dynamic initializer for 'copied_during_static_initialization'':
+00007ff7`20af15c0 4057            push    rdi
+0:000> ?? global_configuration.value
+int 0n42
+0:000> ?? copied_during_static_initialization
+int 0n0
+0:000> g
+Breakpoint 2 hit
+Trap26_StaticInitOrder_unsafe!main+0x6:
+00007ff7`20af27f6 488d1523960000  lea     rdx,[Trap26_StaticInitOrder_unsafe!__xt_z+0x250 (00007ff7`20afbe20)]
+0:000> ?? global_configuration.value
+int 0n42
+0:000> ?? copied_during_static_initialization
+int 0n42
+0:000> g
+cross-TU copied value=42
+```
+
+This run is benign only because this link order ran `global_configuration` first. The C++ rule still does not guarantee that order across translation units.
+
+---
+
+## 6. What the measurements prove
+
+| Target | Evidence | Meaning |
+|---|---|---|
+| safe | constructor called from `safe_configuration` line 5 | ordered by first use |
+| unsafe | two dynamic initializer symbols | cross-TU dependency exists |
+| unsafe run | global initializer first, copied value `42` | result is link-order dependent |
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| `bm ...Configuration::Configuration` | observe static construction |
+| `bm *dynamic*initializer*...` | stop in compiler-generated initializers |
+| `` bp `main.cpp:5` `` / `` bp `main.cpp:7` `` | stop at selected branch |
+| `?? variable` | inspect copied/static values |
+| `k` | distinguish pre-main and first-use construction |
+
+---
+
+## 8. Left to you
+
+1. Change object-file link order and rerun the unsafe target.
+2. Add another dependent global in a third `.cpp`; record initializer order.
+3. Make the configuration constant-initializable with `constinit`.
+4. Move both globals into one TU and identify the ordering rule that changes.
+5. Replace the function-local static with an inline variable and test whether the dependency returns.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB | this build's order | cannot prove all link orders |
+| Sanitizers | no | not a memory-safety class |
+| Compiler | usually no | code is well-formed |
+| Tests | weak | one link order can mask the bug |

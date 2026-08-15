@@ -1,0 +1,195 @@
+# Trap20_DataRace - CDB debug analysis
+
+**Question:** can CDB prove that two worker threads update a shared counter safely?
+
+**Short answer:** no. Breakpoints serialize execution and can make a race disappear. Use CDB to understand who writes the counter and what the threads are doing; use ThreadSanitizer with Clang on Linux or WSL to detect the race. MSVC provides AddressSanitizer only, not ThreadSanitizer or MemorySanitizer.
+
+---
+
+## 1. Read the source first
+
+```cpp
+ 1  #include <atomic>
+ 2  #include <iostream>
+ 3  #include <thread>
+ 4  int main(){
+ 5  #if defined(RUN_UNSAFE_EXAMPLE)
+ 6      int counter=0; auto work=[&]{for(int i=0;i<100000;++i) ++counter;}; // BP: data race; use TSan.
+ 7  #else
+ 8      std::atomic<int> counter{0}; auto work=[&]{for(int i=0;i<100000;++i) counter.fetch_add(1,std::memory_order_relaxed);};
+ 9  #endif
+10      std::jthread a(work),b(work); a.join(); b.join(); std::cout<<counter<<'\n'; }
+```
+
+| Entity | Safe target | Unsafe target |
+|---|---|---|
+| counter | `std::atomic<int>` | plain `int` |
+| worker update | relaxed atomic read-modify-write | unsynchronized increment |
+| final count | expected 200000 | nondeterministic, often short |
+
+---
+
+## 2. Build without a sanitizer
+
+The build already exists in `C:\src\cpptraps42\build\cdb\Debug`; do not clean or rebuild it. Sanitizers are deliberately not part of this CDB run. MSVC has ASan only. Race detection requires TSan on Clang/Linux or WSL.
+
+---
+
+## 3. Start CDB
+
+```powershell
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+  -srcpath C:\src\cpptraps42\Concurrency\Trap20_DataRace ^
+  C:\src\cpptraps42\build\cdb\Debug\Trap20_DataRace.exe
+```
+
+At the prompt, use:
+
+```
+.symopt-100
+.lines -e
+```
+
+Then use `~`, `~*k`, `~<n>s`, and `ba w4 <address>` for thread and shared-memory inspection. `!locks` was tested and failed because full public `ntdll` symbols were not available, so it is omitted.
+
+---
+
+## 4. The safe target
+
+The breakpoint at line 10 stops before worker construction. The hardware breakpoint then catches atomic writes.
+
+```text
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:10`
+0:000> g
+Breakpoint 0 hit
+Trap20_DataRace!main+0x35:
+00007ff7`fb9d18c5 488d542448      lea     rdx,[rsp+48h]
+0:000> $$ SAFE stop before workers are constructed
+0:000>  dv /t /v
+0000009b`f9cffdd8 class std::jthread b = { id=0xcccccccc }
+0000009b`f9cffd88 class main::__l2::<lambda_1> work = class main::__l2::<lambda_1>
+0000009b`f9cffd64 struct std::atomic<int> counter = 0
+0000009b`f9cffda8 class std::jthread a = { id=0xcccccccc }
+0:000> ?? counter
+struct std::atomic<int>
+   +0x000 _Storage         : std::_Atomic_padded<int>
+0:000> r $t0 = @@c++(&counter)
+0:000> .printf "counter address = %p\n", @$t0
+counter address = 0000009bf9cffd64
+0:000> ba w4 @$t0
+0:000> g
+Breakpoint 1 hit
+Trap20_DataRace!std::_Atomic_integral<int,4>::fetch_add+0x2e:
+00007ff7`fb9d383e 8bc1            mov     eax,ecx
+0:005> $$ SAFE hardware write breakpoint hit
+0:005> ~
+   0  Id: 88fc.483c Suspend: 1 Teb: 0000009b`f9aa9000 Unfrozen
+   4  Id: 88fc.9020 Suspend: 1 Teb: 0000009b`f9ab1000 Unfrozen
+.  5  Id: 88fc.1d58 Suspend: 1 Teb: 0000009b`f9ab3000 Unfrozen
+0:005> ~*k
+   4  Id: 88fc.9020 Suspend: 1 Teb: 0000009b`f9ab1000 Unfrozen
+Child-SP          RetAddr               Call Site
+0000009b`fa0ffc20 00007ff7`fb9d19b7     Trap20_DataRace!std::_Atomic_integral<int,4>::fetch_add+0x2e [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\atomic @ 1428]
+0000009b`fa0ffc60 00007ff7`fb9d26d4     Trap20_DataRace!`main'::`2'::<lambda_1>::operator()+0x47 [C:\src\cpptraps42\Concurrency\Trap20_DataRace\main.cpp @ 8]
+#  5  Id: 88fc.1d58 Suspend: 1 Teb: 0000009b`f9ab3000 Unfrozen
+Child-SP          RetAddr               Call Site
+0000009b`fa1ffa10 00007ff7`fb9d19b7     Trap20_DataRace!std::_Atomic_integral<int,4>::fetch_add+0x2e [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\atomic @ 1428]
+0000009b`fa1ffa50 00007ff7`fb9d26d4     Trap20_DataRace!`main'::`2'::<lambda_1>::operator()+0x47 [C:\src\cpptraps42\Concurrency\Trap20_DataRace\main.cpp @ 8]
+```
+
+A normal run of the safe executable printed `200000`.
+
+---
+
+## 5. The unsafe target
+
+The same address watch catches writes to a plain `int`.
+
+```text
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:10`
+0:000> g
+Breakpoint 0 hit
+Trap20_DataRace_unsafe!main+0x31:
+00007ff7`7ed61861 488d542448      lea     rdx,[rsp+48h]
+0:000> $$ UNSAFE stop before workers are constructed
+0:000> dv /t /v
+000000c3`53fffca8 class std::jthread b = { id=0xcccccccc }
+000000c3`53fffc58 class main::__l2::<lambda_1> work = class main::__l2::<lambda_1>
+000000c3`53fffc34 int counter = 0n0
+000000c3`53fffc78 class std::jthread a = { id=0xcccccccc }
+0:000> ?? counter
+int 0n0
+0:000> r $t0 = @@c++(&counter)
+0:000> .printf "counter address = %p\n", @$t0
+counter address = 000000c353fffc34
+0:000> ba w4 @$t0
+0:000> g
+Breakpoint 1 hit
+Trap20_DataRace_unsafe!`main'::`2'::<lambda_1>::operator()+0x3a:
+00007ff7`7ed6193a ebd7            jmp     Trap20_DataRace_unsafe!`main'::`2'::<lambda_1>::operator()+0x13 (00007ff7`7ed61913)
+0:004> $$ UNSAFE hardware write breakpoint hit
+0:004> ~*k
+#  4  Id: 74d4.8968 Suspend: 1 Teb: 000000c3`540c2000 Unfrozen
+Child-SP          RetAddr               Call Site
+000000c3`545ffb70 00007ff7`7ed62624     Trap20_DataRace_unsafe!`main'::`2'::<lambda_1>::operator()+0x3a [C:\src\cpptraps42\Concurrency\Trap20_DataRace\main.cpp @ 6]
+000000c3`545ffb90 00007ff7`7ed623a0     Trap20_DataRace_unsafe!std::invoke<`main'::`2'::<lambda_1> >+0x14 [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\type_traits @ 1801]
+```
+
+A separate no-breakpoint CDB run showed a short count:
+
+```text
+0:000> g
+155050
+ntdll!NtTerminateProcess+0x14:
+00007ffc`a0500904 c3              ret
+0:000> q
+quit:
+```
+
+Outside the debugger, ten unsafe runs printed: `100000`, `100000`, `112839`, `120352`, `133784`, `112351`, `100000`, `160121`, `132236`, `124063`.
+
+---
+
+## 6. What the measurements prove
+
+`ba w4` shows which thread writes the shared counter. The unsafe outside runs show nondeterministic lost updates. The safe stack shows atomic `fetch_add`. None of this makes CDB a race detector: a breakpoint changes the schedule.
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| `.symopt-100` | resolve local names |
+| `.lines -e` | enable source-line breakpoints |
+| `bp `main.cpp:10`` | stop before workers start |
+| `dv /t /v` | show locals and types |
+| `?? counter` | inspect counter type/value |
+| `r $t0 = @@c++(&counter)` | pin the address |
+| `ba w4 @$t0` | break on four-byte writes |
+| `~`, `~*k` | list threads and all stacks |
+
+---
+
+## 8. Left to you
+
+1. Run the unsafe binary 100 times outside CDB and count failures.
+2. Build an equivalent Clang/WSL target with ThreadSanitizer.
+3. Compare relaxed and sequentially consistent atomics in the debugger.
+4. Move `ba w4` to another shared variable and identify each writer.
+5. Repeat the CDB session and note schedule changes caused by breakpoints.
+
+---
+
+## 9. Tool limits
+
+| Tool | Use here | Limitation |
+|---|---|---|
+| CDB | explains writers and thread stacks | not a data-race detector |
+| MSVC ASan | memory errors | no TSan/MSan in MSVC |
+| TSan | primary data-race detector | requires Clang/Linux or WSL |
+| repeated runs | exposes nondeterminism | green runs prove nothing |

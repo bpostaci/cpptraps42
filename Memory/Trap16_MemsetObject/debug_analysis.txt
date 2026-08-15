@@ -1,0 +1,252 @@
+===============================================================================
+ Trap16_MemsetObject - CDB debug analysis
+===============================================================================
+
+
+QUESTION
+  if a class object is just bytes in memory, can memset(&object, 0, sizeof object) be a harmless assignment?
+
+
+SHORT ANSWER
+  no. A raw byte write does not call the class interface. In this lab it overwrites the internal state of a std::string; the program happens to print 0, but that does not make the object invariant valid C++.
+
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+
+main.cpp (12 lines). The BP: comment marks the unsafe write.
+
+ 1  #include <cstring>
+ 2  #include <iostream>
+ 3  #include <string>
+ 4  int main() {
+ 5      std::string text = "owned characters";
+ 6  #if defined(RUN_UNSAFE_EXAMPLE)
+ 7      std::memset(&text, 0, sizeof text); // BP: overwrites invariants; not construction.
+ 8  #else
+ 9      text.clear(); // Type-aware operation maintains the string invariant.
+10  #endif
+11      std::cout << text.size() << '\n';
+12  }
+
+  Entity                        Role                          Invariant to watch
+  text                          std::string object            implementation fields must remain a valid string state
+  text.clear()                  type-aware operation          changes size while preserving capacity and ownership fields
+  std::memset                   raw byte operation            overwrites every byte, including private representation
+
+This MSVC std::string is not a polymorphic class, so there is no vtable pointer to resolve with dps. The same method would expose a destroyed vfptr in a polymorphic class.
+
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+
+cmake -S . -B build\cdb -DTRAPS_BUILD_UNSAFE=ON -DTRAPS_SANITIZER=none
+cmake --build build\cdb --config Debug --target Trap16_MemsetObject Trap16_MemsetObject_unsafe
+
+AddressSanitizer is deliberately off here. The lesson is the object representation before and after one byte operation. ASan is useful for many memory errors, but it is not a general class-invariant checker and MSVC does not provide UBSan.
+
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+       -srcpath C:\src\cpptraps42\Memory\Trap16_MemsetObject ^
+       C:\src\cpptraps42\build\cdb\Debug\Trap16_MemsetObject.exe
+
+- -o follows child processes.
+- -y points at the PDB directory.
+- -srcpath lets source-line breakpoints use  bp main.cpp:8 .
+
+The first two debugger commands are required because they are off by default:
+
+.symopt-100     resolve unqualified locals such as text
+.lines -e       enable source-line breakpoint binding
+
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+
+Addresses change because of ASLR. Compare relationships and field changes, not the digits.
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:8
+0:000> bp main.cpp:10
+0:000> g
+Breakpoint 0 hit
+Trap16_MemsetObject!main+0x38:
+00007ff6598e1968 488d4c2428      lea     rcx,[rsp+28h]
+0:000> $$ ===== STOP A before clear =====
+0:000> dv /t /v
+000000c2ca0ffb08 class std::basic_string<char,std::char_traits<char>,std::allocator<char> > text = "owned characters"
+0:000> ?? text._Mypair._Myval2._Mysize
+unsigned int64 0x10
+0:000> ?? text._Mypair._Myval2._Myres
+unsigned int64 0x1f
+0:000> r $t0 = @@c++(&text)
+0:000> db @$t0 L40
+000000c2ca0ffb08  60 a2 95 8a dd 01 00 00-e0 a2 95 8a dd 01 00 00  ...............
+000000c2ca0ffb18  00 00 00 00 00 00 00 00-10 00 00 00 00 00 00 00  ................
+000000c2ca0ffb28  1f 00 00 00 00 00 00 00-cc cc cc cc cc cc cc cc  ................
+000000c2ca0ffb38  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> dt text
+Local var @ 0xc2ca0ffb08 Type std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+   +0x000 _Mypair          : std::_Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char> >,1>
+0:000> g
+Breakpoint 1 hit
+Trap16_MemsetObject!main+0x42:
+00007ff6598e1972 488d4c2428      lea     rcx,[rsp+28h]
+0:000> $$ ===== STOP B after clear =====
+0:000> dv /t /v
+000000c2ca0ffb08 class std::basic_string<char,std::char_traits<char>,std::allocator<char> > text = ""
+0:000> ?? text._Mypair._Myval2._Mysize
+unsigned int64 0
+0:000> ?? text._Mypair._Myval2._Myres
+unsigned int64 0x1f
+0:000> db @$t0 L40
+000000c2ca0ffb08  60 a2 95 8a dd 01 00 00-e0 a2 95 8a dd 01 00 00  ...............
+000000c2ca0ffb18  00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................
+000000c2ca0ffb28  1f 00 00 00 00 00 00 00-cc cc cc cc cc cc cc cc  ................
+000000c2ca0ffb38  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> dt text
+Local var @ 0xc2ca0ffb08 Type std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+   +0x000 _Mypair          : std::_Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char> >,1>
+0:000> g
+0
+ntdll!NtTerminateProcess+0x14:
+00007ffca0500904 c3              ret
+
+clear() changed the size field from 0x10 to 0, but the capacity field stayed 0x1f and the leading representation bytes were not blindly erased. That is the point of a class member function: it knows which representation changes are legal.
+
+
+
+-------------------------------------------------------------------------------
+ 5. THE UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+
+Same source with RUN_UNSAFE_EXAMPLE enabled.
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:6
+0:000> bp main.cpp:10
+0:000> g
+Breakpoint 0 hit
+Trap16_MemsetObject_unsafe!main+0x38:
+00007ff674111948 41b828000000    mov     r8d,28h
+0:000> $$ ===== STOP 1 before memset =====
+0:000> dv /t /v
+00000041628ff848 class std::basic_string<char,std::char_traits<char>,std::allocator<char> > text = "owned characters"
+0:000> ?? text._Mypair._Myval2._Mysize
+unsigned int64 0x10
+0:000> ?? text._Mypair._Myval2._Myres
+unsigned int64 0x1f
+0:000> r $t0 = @@c++(&text)
+0:000> db @$t0 L40
+00000041628ff848  20 a7 42 f9 eb 01 00 00-a0 a7 42 f9 eb 01 00 00   .B.......B.....
+00000041628ff858  00 00 00 00 00 00 00 00-10 00 00 00 00 00 00 00  ................
+00000041628ff868  1f 00 00 00 00 00 00 00-cc cc cc cc cc cc cc cc  ................
+00000041628ff878  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> dt text
+Local var @ 0x41628ff848 Type std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+   +0x000 _Mypair          : std::_Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char> >,1>
+0:000> g
+Breakpoint 1 hit
+Trap16_MemsetObject_unsafe!main+0x4a:
+00007ff67411195a 488d4c2428      lea     rcx,[rsp+28h]
+0:000> $$ ===== STOP 2 after memset =====
+0:000> dv /t /v
+00000041628ff848 class std::basic_string<char,std::char_traits<char>,std::allocator<char> > text = ""
+0:000> ?? text._Mypair._Myval2._Mysize
+unsigned int64 0
+0:000> ?? text._Mypair._Myval2._Myres
+unsigned int64 0
+0:000> db @$t0 L40
+00000041628ff848  00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................
+00000041628ff858  00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................
+00000041628ff868  00 00 00 00 00 00 00 00-cc cc cc cc cc cc cc cc  ................
+00000041628ff878  cc cc cc cc cc cc cc cc-cc cc cc cc cc cc cc cc  ................
+0:000> dt text
+Local var @ 0x41628ff848 Type std::basic_string<char,std::char_traits<char>,std::allocator<char> >
+   +0x000 _Mypair          : std::_Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char> >,1>
+0:000> g
+0
+ntdll!NtTerminateProcess+0x14:
+00007ffca0500904 c3              ret
+
+The debugger display says text = "", but the byte dump is stronger evidence: every byte in the object was zeroed, including fields that clear() preserved. This is not string assignment. It is a write through void* into the representation of a live class object.
+
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+
+  Measurement                   Safe clear()                  Unsafe memset
+  displayed value after operation  ""                            ""
+  size field                    0x10 -> 0                     0x10 -> 0
+  capacity field                0x1f -> 0x1f                  0x1f -> 0
+  first object bytes            mostly preserved              all zero
+  class operation used          yes                           no
+
+The two runs can both print 0. That is not the test. The test is whether the object was changed through its class contract. clear() maintains the representation; memset destroys it by accident. Debug CRT fill bytes such as 0xCC, 0xCD, 0xFD, 0xDD, and 0xFEEEFEEE are implementation diagnostics in Debug builds, not language guarantees.
+
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+
+  Command                       Purpose
+  .symopt-100                   allow unqualified local names
+  .lines -e                     enable source-line breakpoints
+   bp main.cpp:6                stop before the unsafe raw write
+   bp main.cpp:10               stop after the branch and before printing
+  dv /t /v                      show locals with type and address
+  r $t0 = @@c++(&text)          pin the object address for both stops
+  db @$t0 L40                   dump the 40-byte std::string object representation
+  ?? expr                       evaluate implementation fields
+  dt text                       show the debugger's type view of the class object
+  g                             run to the next breakpoint
+
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+
+1. Replace std::string with a small polymorphic type and repeat the byte dump. What does dps show for the vtable pointer before and after memset?
+2. Change the string literal to a shorter value that fits small-string optimization. Which bytes move into the object itself?
+3. Run the Release executable. Which Debug-only bytes disappear, and does the program still appear to work?
+4. Use a watch expression for _Mysize and _Myres while stepping over clear(). Which fields does the library intentionally leave alone?
+5. Try text = {}; instead of clear(). Does it produce the same representation as clear() on this implementation?
+
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+
+  Tool                          Reports this trap             Limitation
+  CDB byte dump                 yes, as representation evidence  shows bytes, not whether the C++ contract is valid on another implementation
+  AddressSanitizer              usually no                    not a class-invariant checker
+  MSVC compiler warnings        no                            the raw call is syntactically valid
+  Release build                 no                            removes many diagnostic byte patterns

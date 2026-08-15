@@ -1,0 +1,164 @@
+# Trap13_StrictAliasing - CDB debug analysis
+
+**Question:** if the bytes of a `float` are `00 00 80 3f`, may we read the same storage through `std::uint32_t*`?
+
+**Short answer:** the bytes are real, but the pointer cast is the wrong rule. The safe target uses `std::bit_cast` to copy the value representation. The unsafe target reads through an incompatible type; that is undefined behavior even when MSVC prints the expected bits.
+
+---
+
+## 1. Read the source first
+
+```cpp
+ 1  #include <bit>
+ 2  #include <cstdint>
+ 3  #include <iostream>
+ 4  int main() {
+ 5      float value = 1.0F;
+ 6  #if defined(RUN_UNSAFE_EXAMPLE)
+ 8      auto bits = *reinterpret_cast<std::uint32_t*>(&value); // BP: strict-aliasing violation.
+ 9  #else
+11      auto bits = std::bit_cast<std::uint32_t>(value); // BP: legal representation copy.
+12  #endif
+13      std::cout << std::hex << bits << '\n';
+14  }
+```
+
+| Name | Meaning |
+|---|---|
+| `value` | live `float` object |
+| `bits` | integer copy of the representation |
+| `00 00 80 3f` | little-endian representation of IEEE-754 `1.0f` |
+
+---
+
+## 2. Build without a sanitizer
+
+This session uses the existing `Trap13_StrictAliasing.exe` and `_unsafe` sibling. MSVC provides AddressSanitizer, but not UBSan; strict-aliasing diagnosis is normally a Clang UBSan job, not an MSVC CDB job.
+
+---
+
+## 3. Start CDB
+
+Use the same `cdb -o -y ... -srcpath ...` pattern, then enable `.symopt-100` and `.lines -e`.
+
+---
+
+## 4. The safe target
+
+```text
+0:000> bp `main.cpp:11`
+0:000> bp `main.cpp:12`
+0:000> g
+Breakpoint 0 hit
+Trap13_StrictAliasing!main+0x25:
+00007ff7`a2d61575 488d4c2424      lea     rcx,[rsp+24h]
+0:000> $$ ===== STOP A: before std::bit_cast reads the value representation =====
+0:000> dv /t /v
+000000a0`48b4f6a4 unsigned int bits = 0xcccccccc
+000000a0`48b4f694 float value = 1
+0:000> .printf "&value = %p\n", @@c++(&value)
+&value = 000000a048b4f694
+0:000> ?? value
+float 1
+0:000> db @@c++(&value) L4
+000000a0`48b4f694  00 00 80 3f                                      ...?
+0:000> g
+Breakpoint 1 hit
+Trap13_StrictAliasing!main+0x33:
+00007ff7`a2d61583 488d15bcfaffff  lea     rdx,[Trap13_StrictAliasing!ILT+65(?hexstdYAAEAVios_base (00007ff7`a2d61046)]
+0:000> $$ ===== STOP B: after bit_cast, bytes unchanged and bits assigned =====
+0:000> dv /t /v
+000000a0`48b4f6a4 unsigned int bits = 0x3f800000
+000000a0`48b4f694 float value = 1
+0:000> db @@c++(&value) L4
+000000a0`48b4f694  00 00 80 3f                                      ...?
+0:000> ?? bits
+unsigned int 0x3f800000
+0:000> g
+3f800000
+```
+
+---
+
+## 5. The unsafe target
+
+```text
+0:000> bp `main.cpp:8`
+0:000> bp `main.cpp:12`
+0:000> g
+Breakpoint 0 hit
+Trap13_StrictAliasing_unsafe!main+0x14:
+00007ff6`dd531554 8b442420        mov     eax,dword ptr [rsp+20h] ss:00000014`dc8ff9d0=3f800000
+0:000> $$ ===== STOP A: before reinterpret_cast reads through uint32_t* =====
+0:000> dv /t /v
+00000014`dc8ff9d4 unsigned int bits = 0xbc18c410
+00000014`dc8ff9d0 float value = 1
+0:000> .printf "&value = %p\n", @@c++(&value)
+&value = 00000014dc8ff9d0
+0:000> ?? value
+float 1
+0:000> db @@c++(&value) L4
+00000014`dc8ff9d0  00 00 80 3f                                      ...?
+0:000> ?? (unsigned int*)&value
+unsigned int * 0x00000014`dc8ff9d0
+0:000> g
+Breakpoint 1 hit
+Trap13_StrictAliasing_unsafe!main+0x1c:
+00007ff6`dd53155c 488d15e3faffff  lea     rdx,[Trap13_StrictAliasing_unsafe!ILT+65(?hexstdYAAEAVios_base (00007ff6`dd531046)]
+0:000> $$ ===== STOP B: after incompatible-type read, storage is unchanged =====
+0:000> dv /t /v
+00000014`dc8ff9d4 unsigned int bits = 0x3f800000
+00000014`dc8ff9d0 float value = 1
+0:000> db @@c++(&value) L4
+00000014`dc8ff9d0  00 00 80 3f                                      ...?
+0:000> ?? bits
+unsigned int 0x3f800000
+0:000> g
+3f800000
+```
+
+---
+
+## 6. What the measurements prove
+
+| Measurement | Safe target | Unsafe target |
+|---|---|---|
+| `value` type | `float` | `float` |
+| bytes before read | `00 00 80 3f` | `00 00 80 3f` |
+| operation | `std::bit_cast<std::uint32_t>(value)` | `*reinterpret_cast<std::uint32_t*>(&value)` |
+| bytes after read | unchanged | unchanged |
+| `bits` | `0x3f800000` | `0x3f800000` on this run |
+| language category | defined | undefined behavior |
+
+The byte pattern is not the issue. The issue is the access path. MSVC is comparatively permissive here, so the unsafe target can appear to work. That is not a proof of defined behavior.
+
+---
+
+## 7. Command reference used here
+
+| Command | Why it was used |
+|---|---|
+| `dv /t /v` | show the static types and values of locals |
+| `db &value L4` | dump the exact object bytes |
+| `?? value` / `?? bits` | compare interpretations of the same representation |
+| `?? (unsigned int*)&value` | show the unsafe pointer value before dereference |
+
+---
+
+## 8. Left to you
+
+1. Change `value` to `2.0F` in a scratch copy. Which byte changes first on little-endian x64?
+2. Compile the unsafe variant with Clang UBSan in a separate workspace. Does it diagnose the load?
+3. Replace `std::uint32_t` with `std::array<std::byte,4>` and inspect the bytes again.
+4. Try an optimizing Release build and compare whether CDB still shows a separate `bits` local.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB bytes | partially | proves representation, not aliasing legality |
+| MSVC ASan | no | strict aliasing is not an address error |
+| Clang UBSan | yes | not provided by MSVC in this project |
+| Program output | no | unsafe output may match the safe output |

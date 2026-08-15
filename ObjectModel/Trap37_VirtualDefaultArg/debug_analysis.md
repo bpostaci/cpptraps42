@@ -1,0 +1,147 @@
+# Trap37_VirtualDefaultArg - CDB debug analysis
+
+**Question:** can an override change the default argument of a virtual function?
+
+**Short answer:** it can declare one, but default arguments are substituted from the static type at the call site. The body is then chosen by virtual dispatch from the dynamic type. This is defined behavior, and no sanitizer reports it.
+
+---
+
+## 1. Read the source first
+
+```cpp
+ 4  struct Base {
+ 6      virtual void render(int scale = 1) const { std::cout << "Base::render scale=" << scale << '\n'; }
+ 9  struct Derived : Base {
+10      void render(int scale = 100) const override {
+11          std::cout << "Derived::render scale=" << scale << '\n';
+16      Derived d;
+17      const Base& as_base = d;
+18      d.render();       // static type Derived, default 100.
+19      as_base.render(); // static type Base, default 1, body still Derived.
+25      void render(int scale = 1) const { do_render(scale); }
+27      virtual void do_render(int scale) const = 0;
+45      virtual void render(int scale) const { std::cout << "Explicit::render scale=" << scale << '\n'; }
+46      void render() const { render(1); }
+```
+
+| Entity | Role |
+|---|---|
+| `Base::render(int = 1)` | Default used through `Base` static type. |
+| `Derived::render(int = 100)` | Override body for a `Derived` object. |
+| `Interface::render` | Non-virtual wrapper that owns one default. |
+| `Explicit::render()` | Real overload instead of defaulting. |
+
+---
+
+## 2. Build and compiler evidence
+
+The existing `build\cdb\Debug\Trap37_VirtualDefaultArg.exe` was used. MSVC accepts the code because different defaults on an override are legal. The evidence is `Derived::render` in the stack with two different `scale` values.
+
+---
+
+## 3. Start CDB
+
+```powershell
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug -srcpath C:\src\cpptraps42\ObjectModel\Trap37_VirtualDefaultArg -cf %TEMP%\h2_trap37.cdb C:\src\cpptraps42\build\cdb\Debug\Trap37_VirtualDefaultArg.exe
+```
+
+`.symopt-100` and `.lines -e` are required for local-variable names and source-line breakpoints.
+
+---
+
+## 4. Transcript: dynamic body, static default
+
+```text
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:11`
+*** WARNING: Unable to verify checksum for Trap37_VirtualDefaultArg.exe
+0:000> bp `main.cpp:25`
+0:000> bp `main.cpp:32`
+0:000> bp `main.cpp:45`
+0:000> bp `main.cpp:46`
+0:000> g
+Breakpoint 0 hit
+Trap37_VirtualDefaultArg!Derived::render+0xe:
+00007ff6`a13f2a5e 488d157b960000  lea     rdx,[Trap37_VirtualDefaultArg!`string' (00007ff6`a13fc0e0)]
+0:000> $$ ===== STOP 1: d.render() uses Derived static default =====
+0:000> k
+Child-SP          RetAddr               Call Site
+0000005b`fc0ff6f0 00007ff6`a13f16db     Trap37_VirtualDefaultArg!Derived::render+0xe [C:\src\cpptraps42\ObjectModel\Trap37_VirtualDefaultArg\main.cpp @ 11]
+0000005b`fc0ff730 00007ff6`a13f183b     Trap37_VirtualDefaultArg!default_argument_comes_from_static_type+0x3b [C:\src\cpptraps42\ObjectModel\Trap37_VirtualDefaultArg\main.cpp @ 19]
+0:000> dv /t /v
+0000005b`fc0ff730 struct Derived * this = 0x0000005b`fc0ff758
+0000005b`fc0ff738 int scale = 0n100
+0:000> ?? scale
+int 0n100
+0:000> g
+Breakpoint 0 hit
+Trap37_VirtualDefaultArg!Derived::render+0xe:
+00007ff6`a13f2a5e 488d157b960000  lea     rdx,[Trap37_VirtualDefaultArg!`string' (00007ff6`a13fc0e0)]
+0:000> $$ ===== STOP 2: as_base.render() uses Base static default =====
+0:000> k
+Child-SP          RetAddr               Call Site
+0000005b`fc0ff6f0 00007ff6`a13f16fa     Trap37_VirtualDefaultArg!Derived::render+0xe [C:\src\cpptraps42\ObjectModel\Trap37_VirtualDefaultArg\main.cpp @ 11]
+0000005b`fc0ff730 00007ff6`a13f183b     Trap37_VirtualDefaultArg!default_argument_comes_from_static_type+0x5a [C:\src\cpptraps42\ObjectModel\Trap37_VirtualDefaultArg\main.cpp @ 19]
+0:000> dv /t /v
+0000005b`fc0ff730 struct Derived * this = 0x0000005b`fc0ff758
+0000005b`fc0ff738 int scale = 0n1
+0:000> ?? scale
+int 0n1
+0:000> g
+Derived::render scale=100
+Derived::render scale=1
+Impl::do_render scale=1
+Impl::do_render scale=1
+Explicit::render scale=1
+Explicit::render scale=5
+```
+
+---
+
+## 5. Why there is no unsafe target
+
+`Trap37_VirtualDefaultArg_unsafe.exe` does not exist. The example is a defined compile-time binding rule, not a runtime memory fault. The NVI and overload variants are corrective patterns in the same target.
+
+---
+
+## 6. What the measurements prove
+
+| Call expression | Static type | Stack body | `scale` |
+|---|---|---|---|
+| `d.render()` | `Derived` | `Derived::render` | `100` |
+| `as_base.render()` | `Base` | `Derived::render` | `1` |
+
+Virtual dispatch and default-argument substitution are separate mechanisms.
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| `` bp `main.cpp:11` `` | Stop inside the override body. |
+| `k` | Prove the dynamic body. |
+| `dv /t /v` | Show local argument storage. |
+| `?? scale` | Confirm the substituted default value. |
+| `g` | Continue between call variants. |
+
+---
+
+## 8. Left to you
+
+1. Add `const Derived& as_derived = d; as_derived.render();` and inspect `scale`.
+2. Remove the default from `Derived::render`. Does `d.render()` compile?
+3. Give `do_render` a private default in a scratch copy. Can callers through `Interface` use it?
+4. Replace `Explicit::render()` with a default argument and compare static-type behavior.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB | Yes | Must inspect both stack and argument. |
+| Compiler | No required warning | The program is legal. |
+| AddressSanitizer | No | No invalid memory access occurs. |
+| Static analysis | Sometimes | Style checks may ban defaults on virtuals. |

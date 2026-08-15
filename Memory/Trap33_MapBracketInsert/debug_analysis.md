@@ -1,0 +1,236 @@
+# Trap33_MapBracketInsert - CDB debug analysis
+
+**Question:** Can a lookup grow a map even when the code looks like a read?
+
+**Short answer:** Yes. `std::map::operator[]` is a mutating API on a miss. The behaviour is fully defined; the bug is assuming it was a read-only lookup.
+
+---
+
+## 1. Read the source first
+
+`main.cpp` (numbered). The `BP:` comments mark the intended stops.
+
+```cpp
+ 1  #include <iostream>
+ 2  #include <map>
+ 3  #include <string>
+ 4  
+ 5  static void dump(const char* label, const std::map<std::string, int>& m) {
+ 6  	std::cout << label << " size=" << m.size() << " keys=[";
+ 7  	for (const auto& [key, value] : m) { std::cout << key << ':' << value << ' '; }
+ 8  	std::cout << "]\n";
+ 9  }
+10  
+11  // Type 1: operator[] is a mutating call - a lookup miss default-constructs and inserts.
+12  void bracket_inserts_silently() {
+13  	std::map<std::string, int> scores{{"ada", 10}};
+14  	if (scores["bob"] == 0) { // BP: "bob" did not exist; it is created with value 0 right here.
+15  		std::cout << "bob looked absent, but...\n";
+16  	}
+17  	dump("bracket ", scores); // Size is 2, not 1.
+18  }
+19  
+20  // Type 2: read-only lookups must use find/at/contains, which never insert.
+21  void non_mutating_lookups() {
+22  	std::map<std::string, int> scores{{"ada", 10}};
+23  	if (auto it = scores.find("bob"); it != scores.end()) {
+24  		std::cout << "found bob\n";
+25  	} else {
+26  		std::cout << "bob absent, nothing inserted\n";
+27  	}
+28  	std::cout << "contains(ada)=" << std::boolalpha << scores.contains("ada")
+29  			  << " at(ada)=" << scores.at("ada") << '\n';
+30  	dump("lookup  ", scores); // Still size 1.
+31  }
+32  
+33  // Type 3: a const map has no operator[], so the trap turns into a compile error - use that.
+34  void const_map_forbids_bracket() {
+35  	const std::map<std::string, int> scores{{"ada", 10}};
+36  	// scores["bob"]; // Would not compile: operator[] is non-const by design.
+37  	std::cout << "const at(ada)=" << scores.at("ada") << '\n';
+38  
+39  	// Counting words: operator[] is the right tool when insertion IS the intent.
+40  	std::map<char, int> histogram;
+41  	for (char c : std::string{"abracadabra"}) { ++histogram[c]; } // Intentional insert-or-update.
+42  	std::cout << "histogram a=" << histogram['a'] << " b=" << histogram['b'] << '\n';
+43  }
+44  
+45  int main() {
+46  	bracket_inserts_silently();
+47  	non_mutating_lookups();
+48  	const_map_forbids_bracket();
+49  }
+```
+
+| Name | Role | Invariant to check |
+|---|---|---|
+| scores | map<string,int> | size must not change during read-only lookup |
+| operator[] | lookup-or-insert | miss inserts default value |
+| find/contains/at | read-only lookup family | miss does not insert |
+| histogram | intentional insert-or-update | growth is expected, not a trap |
+
+---
+
+## 2. Build without a sanitizer
+
+No build, clean, or rebuild was run for this document. The existing Debug executable was used:
+
+```powershell
+C:\src\cpptraps42\build\cdb\Debug\Trap33_MapBracketInsert.exe
+```
+
+A sanitizer would add nothing: no memory safety or undefined-behaviour rule is violated. The only useful measurement is the container's logical state before and after the call.
+
+---
+
+## 3. Start CDB
+
+```powershell
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+       -srcpath C:\src\cpptraps42\Memory\\Trap33_MapBracketInsert ^
+       C:\src\cpptraps42\build\cdb\Debug\Trap33_MapBracketInsert.exe
+```
+
+Two settings are required before using source lines and local names:
+
+```
+.symopt-100
+.lines -e
+```
+
+---
+
+## 4. Transcript: one defined-behaviour target
+
+Command output below is copied from real CDB runs. Addresses are from one run and are not stable across runs.
+
+### All variants
+
+```
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp Trap33_MapBracketInsert!bracket_inserts_silently+0xb1
+0:000> bp Trap33_MapBracketInsert!bracket_inserts_silently+0x131
+0:000> bp Trap33_MapBracketInsert!non_mutating_lookups+0xb1
+0:000> bp Trap33_MapBracketInsert!non_mutating_lookups+0x29c
+0:000> bp Trap33_MapBracketInsert!const_map_forbids_bracket+0x138
+0:000> bp Trap33_MapBracketInsert!const_map_forbids_bracket+0x203
+0:000> g
+Breakpoint 0 hit
+Trap33_MapBracketInsert!bracket_inserts_silently+0xb1:
+00007ff7`55572521 488d15b04a0100  lea     rdx,[Trap33_MapBracketInsert!std::_Digit_pairs<wchar_t>+0x338 (00007ff7`55586fd8)]
+0:000> $$ ===== VARIANT 1: immediately before operator[] lookup =====
+0:000> dv /t /v
+00000009`7cd3f7f8 class std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > > scores = { size=0x1 }
+0:000> dx scores
+scores           : { size=0x1 } [Type: std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > >]
+    [0x0]            : "ada", 10 [Type: std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int>]
+0:000> g
+Breakpoint 1 hit
+Trap33_MapBracketInsert!bracket_inserts_silently+0x131:
+00007ff7`555725a1 488d542428      lea     rdx,[rsp+28h]
+0:000> $$ ===== VARIANT 1: immediately after operator[] lookup =====
+0:000> dv /t /v
+00000009`7cd3f7f8 class std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > > scores = { size=0x2 }
+0:000> dx scores
+scores           : { size=0x2 } [Type: std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > >]
+    [0x0]            : "ada", 10 [Type: std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int>]
+    [0x1]            : "bob", 0 [Type: std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int>]
+0:000> g
+Breakpoint 2 hit
+Trap33_MapBracketInsert!non_mutating_lookups+0xb1:
+00007ff7`555726a1 488d1568490100  lea     rdx,[Trap33_MapBracketInsert!std::_Digit_pairs<wchar_t>+0x370 (00007ff7`55587010)]
+0:000> $$ ===== VARIANT 2: immediately before find() lookup =====
+0:000> dv /t /v
+00000009`7cd3f738 class std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > > scores = { size=0x1 }
+0:000> g
+Breakpoint 3 hit
+Trap33_MapBracketInsert!non_mutating_lookups+0x29c:
+00007ff7`5557288c 488d542428      lea     rdx,[rsp+28h]
+0:000> $$ ===== VARIANT 2: after find()/contains()/at() =====
+0:000> dv /t /v
+00000009`7cd3f738 class std::map<std::basic_string<char,std::char_traits<char>,std::allocator<char> >,int,std::less<std::basic_string<char,std::char_traits<char>,std::allocator<char> > >,std::allocator<std::pair<std::basic_string<char,std::char_traits<char>,std::allocator<char> > const ,int> > > scores = { size=0x1 }
+0:000> g
+Breakpoint 4 hit
+Trap33_MapBracketInsert!const_map_forbids_bracket+0x138:
+00007ff7`55572a18 488d1551470100  lea     rdx,[Trap33_MapBracketInsert!std::_Digit_pairs<wchar_t>+0x4d0 (00007ff7`55587170)]
+0:000> $$ ===== VARIANT 3: before intentional insert-or-update loop =====
+0:000> dv /t /v
+00000009`7cd3f7b8 class std::map<char,int,std::less<char>,std::allocator<std::pair<char const ,int> > > histogram = { size=0x0 }
+0:000> g
+Breakpoint 5 hit
+Trap33_MapBracketInsert!const_map_forbids_bracket+0x203:
+00007ff7`55572ae3 488d1596460100  lea     rdx,[Trap33_MapBracketInsert!std::_Digit_pairs<wchar_t>+0x4e0 (00007ff7`55587180)]
+0:000> $$ ===== VARIANT 3: after intentional insert-or-update loop =====
+0:000> dv /t /v
+00000009`7cd3f7b8 class std::map<char,int,std::less<char>,std::allocator<std::pair<char const ,int> > > histogram = { size=0x5 }
+0:000> dx histogram
+histogram        : { size=0x5 } [Type: std::map<char,int,std::less<char>,std::allocator<std::pair<char const ,int> > >]
+    [0x0]            : 97 'a', 5 [Type: std::pair<char const ,int>]
+    [0x1]            : 98 'b', 2 [Type: std::pair<char const ,int>]
+    [0x2]            : 99 'c', 1 [Type: std::pair<char const ,int>]
+    [0x3]            : 100 'd', 1 [Type: std::pair<char const ,int>]
+    [0x4]            : 114 'r', 2 [Type: std::pair<char const ,int>]
+0:000> g
+bob looked absent, but...
+bracket  size=2 keys=[ada:10 bob:0 ]
+bob absent, nothing inserted
+contains(ada)=true at(ada)=10
+lookup   size=1 keys=[ada:10 ]
+const at(ada)=10
+histogram a=5 b=2
+```
+
+---
+
+## 5. Why there is no `_unsafe` target
+
+There is no `_unsafe` executable because every path is well-defined C++. A missing key passed to `operator[]` creates a new element; `find`, `contains`, and `at` do not. The word wrong means 'the program violated its higher-level invariant that a lookup should not mutate the map', not 'the runtime entered undefined behaviour'.
+
+---
+
+## 6. What the measurements prove
+
+| Variant | Before | After | Meaning |
+|---|---|---|---|
+| operator[] miss | scores size 1 | scores size 2; bob:0 appears | a read-looking expression inserted |
+| find/contains/at | scores size 1 | scores size 1 | read-only lookup preserved the invariant |
+| histogram | size 0 | size 5 | operator[] is correct when insertion is intended |
+
+The debugger does not prove corruption. It proves mutation. That is exactly the trap: the compiler and library are correct, while the programmer's mental model was wrong.
+
+---
+
+## 7. Command reference used here
+
+| Command | Purpose |
+|---|---|
+| .symopt-100 | resolve unqualified C++ symbols |
+| .lines -e | enable source-line information |
+| bp | set a source, function, or offset breakpoint |
+| g | run to the next breakpoint |
+| dv /t /v | show local variables with types |
+| ?? expr | evaluate a C++ expression |
+| dx | display C++ objects through debugger visualizers |
+| dt | display a type or local object's fields |
+
+---
+
+## 8. Left to you
+
+1. Add a watch for `scores` and repeat the first stop with `contains("bob")` in the source. Does the size still change?
+2. Change the first variant to `at("bob")`. Where does the exception occur, and what remains unchanged?
+3. Break inside the histogram loop and watch the first `a` insertion separately from later `a` updates.
+4. Make `scores` const in the first variant. Confirm that the error moves from runtime surprise to compile-time rejection.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB | yes, as state inspection | It shows the state change; it does not know the programmer's invariant. |
+| AddressSanitizer | no | MSVC ASan diagnoses memory safety errors, not defined container/API semantics. |
+| UBSan | no | There is no undefined operation here to diagnose. |
+| TSan | no | No data race is involved. |
+| Assertions/code review | yes | The useful check is the intended invariant: size, type, tolerance, or signed domain. |

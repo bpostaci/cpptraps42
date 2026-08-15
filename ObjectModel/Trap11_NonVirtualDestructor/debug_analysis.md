@@ -1,0 +1,163 @@
+# Trap11_NonVirtualDestructor - CDB debug analysis
+
+**Question:** when a `std::unique_ptr<Base>` owns a `Derived`, which destructor runs at scope exit?
+
+**Short answer:** in this repository version, `Base` has a virtual destructor, so deletion through `Base*` dispatches to `Derived::~Derived()` first and then `Base::~Base()`. A non-virtual base destructor in this situation would make the delete expression undefined behavior.
+
+---
+
+## 1. Read the source first
+
+```cpp
+ 1  #include <memory>
+ 2  struct Base { virtual ~Base()=default; }; // Virtual because deletion through Base is supported.
+ 3  struct Derived final: Base { std::unique_ptr<int> resource=std::make_unique<int>(42); };
+ 4  int main(){ std::unique_ptr<Base> p=std::make_unique<Derived>(); // BP: destruction dispatches correctly.
+ 5  }
+```
+
+| Entity | Role |
+|---|---|
+| `Base` | polymorphic base with virtual destructor |
+| `Derived::resource` | derived-owned state that must be destroyed |
+| `p` | base-typed owner; destruction occurs through `Base*` |
+
+---
+
+## 2. Build without a sanitizer
+
+This session uses the existing `build\cdb\Debug\Trap11_NonVirtualDestructor.exe`. No rebuild or sanitizer is required: the checked artifact demonstrates the safe virtual-destructor case.
+
+---
+
+## 3. Start CDB
+
+```powershell
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+    -srcpath C:\src\cpptraps42\ObjectModel\Trap11_NonVirtualDestructor ^
+    C:\src\cpptraps42\build\cdb\Debug\Trap11_NonVirtualDestructor.exe
+```
+
+Use `.symopt-100` for C++ names and `.lines -e` for source-line breakpoints.
+
+---
+
+## 4. The safe target
+
+```text
+0:000> x Trap11_NonVirtualDestructor!*::~*
+00007ff6`8ccd1cb0 Trap11_NonVirtualDestructor!Derived::~Derived (void)
+00007ff6`8ccd1be0 Trap11_NonVirtualDestructor!std::unique_ptr<Base,std::default_delete<Base> >::~unique_ptr<Base,std::default_delete<Base> > (void)
+00007ff6`8ccd1ca0 Trap11_NonVirtualDestructor!Base::~Base (void)
+00007ff6`8ccd1b80 Trap11_NonVirtualDestructor!std::unique_ptr<int,std::default_delete<int> >::~unique_ptr<int,std::default_delete<int> > (void)
+0:000> dt Trap11_NonVirtualDestructor!Base
+   +0x000 __VFN_table : Ptr64 
+0:000> dt Trap11_NonVirtualDestructor!Derived
+   +0x000 __VFN_table : Ptr64 
+   +0x008 resource         : std::unique_ptr<int,std::default_delete<int> >
+0:000> bp `main.cpp:5`
+0:000> bp Trap11_NonVirtualDestructor!Derived::~Derived+0xa
+0:000> bp Trap11_NonVirtualDestructor!Base::~Base
+0:000> g
+Breakpoint 0 hit
+Trap11_NonVirtualDestructor!main+0x40:
+00007ff6`8ccd1710 488d4c2428      lea     rcx,[rsp+28h]
+0:000> $$ ===== STOP A: unique_ptr<Base> owns a Derived object =====
+0:000> dv /t /v
+0000007c`bf6ff8d8 class std::unique_ptr<Base,std::default_delete<Base> > p = unique_ptr {...}
+0:000> dqs @@c++(&p) L1
+0000007c`bf6ff8d8  00000231`ad87bb80
+0:000> r $t0 = poi(@@c++(&p))
+0:000> .printf "owned object = %p\n", @$t0
+owned object = 00000231ad87bb80
+0:000> dps @$t0 L1
+00000231`ad87bb80  00007ff6`8ccdac48 Trap11_NonVirtualDestructor!Derived::`vftable'
+0:000> dt Trap11_NonVirtualDestructor!Derived @$t0
+   +0x000 __VFN_table : 0x00007ff6`8ccdac48 
+   +0x008 resource         : std::unique_ptr<int,std::default_delete<int> >
+0:000> g
+Breakpoint 1 hit
+Trap11_NonVirtualDestructor!Derived::~Derived+0xa:
+00007ff6`8ccd1cba 488b442430      mov     rax,qword ptr [rsp+30h] ss:0000007c`bf6ff7f0=00000231ad87bb80
+0:000> $$ ===== STOP B: Derived destructor is reached first =====
+0:000> .printf "this = %p\n", poi(@rsp+30)
+this = 00000231ad87bb80
+0:000> dps poi(@rsp+30) L1
+00000231`ad87bb80  00007ff6`8ccdac48 Trap11_NonVirtualDestructor!Derived::`vftable'
+0:000> k L6
+Child-SP          RetAddr               Call Site
+0000007c`bf6ff7c0 00007ff6`8ccd1e68     Trap11_NonVirtualDestructor!Derived::~Derived+0xa
+0000007c`bf6ff7f0 00007ff6`8ccd1d6f     Trap11_NonVirtualDestructor!Derived::`scalar deleting destructor'+0x18
+0000007c`bf6ff820 00007ff6`8ccd1c23     Trap11_NonVirtualDestructor!std::default_delete<Base>::operator()+0x3f
+0000007c`bf6ff870 00007ff6`8ccd171a     Trap11_NonVirtualDestructor!std::unique_ptr<Base,std::default_delete<Base> >::~unique_ptr<Base,std::default_delete<Base> >+0x43
+0000007c`bf6ff8b0 00007ff6`8ccd26d9     Trap11_NonVirtualDestructor!main+0x4a
+0000007c`bf6ff910 00007ff6`8ccd2582     Trap11_NonVirtualDestructor!invoke_main+0x39
+0:000> g
+Breakpoint 2 hit
+Trap11_NonVirtualDestructor!Base::~Base:
+00007ff6`8ccd1ca0 48894c2408      mov     qword ptr [rsp+8],rcx ss:0000007c`bf6ff7c0=00000231ad87bb88
+0:000> $$ ===== STOP C: Base destructor is then called for the base subobject =====
+0:000> .printf "this = %p\n", @rcx
+this = 00000231ad87bb80
+0:000> dps @rcx L1
+00000231`ad87bb80  00007ff6`8ccdac48 Trap11_NonVirtualDestructor!Derived::`vftable'
+0:000> k L6
+Child-SP          RetAddr               Call Site
+0000007c`bf6ff7b8 00007ff6`8ccd1cd5     Trap11_NonVirtualDestructor!Base::~Base
+0000007c`bf6ff7c0 00007ff6`8ccd1e68     Trap11_NonVirtualDestructor!Derived::~Derived+0x25
+0000007c`bf6ff7f0 00007ff6`8ccd1d6f     Trap11_NonVirtualDestructor!Derived::`scalar deleting destructor'+0x18
+0000007c`bf6ff820 00007ff6`8ccd1c23     Trap11_NonVirtualDestructor!std::default_delete<Base>::operator()+0x3f
+0000007c`bf6ff870 00007ff6`8ccd171a     Trap11_NonVirtualDestructor!std::unique_ptr<Base,std::default_delete<Base> >::~unique_ptr<Base,std::default_delete<Base> >+0x43
+0000007c`bf6ff8b0 00007ff6`8ccd26d9     Trap11_NonVirtualDestructor!main+0x4a
+```
+
+---
+
+## 5. Why there is no unsafe target
+
+The build directory contains `Trap11_NonVirtualDestructor.exe` but no `_unsafe` sibling. The source also contains no `RUN_UNSAFE_EXAMPLE`. The current file is the virtual-destructor comparison case: it demonstrates the correct rule rather than compiling a deliberately non-virtual base. If `Base::~Base()` were non-virtual and the same `Derived` object were deleted through `Base*`, the behavior would be undefined; the derived `resource` cleanup would not be something the program may rely on.
+
+---
+
+## 6. What the measurements prove
+
+| Measurement | Before scope exit | During destruction |
+|---|---|---|
+| owner storage | `p` stores `00000231ad87bb80` | `unique_ptr<Base>` calls `default_delete<Base>` |
+| object vfptr | `Derived::vftable` | still resolves to `Derived::vftable` at the destructor stops |
+| destructor order | not yet running | `Derived::~Derived` then `Base::~Base` |
+| derived member | `resource` at offset `+0x008` | covered because the derived destructor is reached |
+
+The key comparison is between the static owner type (`Base`) and the dynamic vfptr (`Derived::vftable`). The virtual destructor lets deletion follow the dynamic type.
+
+---
+
+## 7. Command reference used here
+
+| Command | Why it was used |
+|---|---|
+| `x module!*::~*` | list destructor symbols that CDB can break on |
+| `dt module!Derived` | show that `resource` is derived-only state |
+| `dqs &p L1` | read the raw pointer held by `unique_ptr` |
+| `dps object L1` | resolve the live object's vfptr |
+| `k L6` | show destructor dispatch through `default_delete<Base>` |
+
+---
+
+## 8. Left to you
+
+1. In a scratch copy, remove `virtual` from `Base::~Base()` and inspect which destructor symbols are reachable.
+2. Add output to both destructors in a scratch copy. Does the printed order match the stack order above?
+3. Replace `unique_ptr<Base>` with `unique_ptr<Derived>`. Which frames disappear from the stack?
+4. Add a second derived resource and confirm where it appears in `dt Derived`.
+
+---
+
+## 9. Tool limits
+
+| Tool | Reports this trap | Limitation |
+|---|---|---|
+| CDB | yes | proves dispatch in this binary, not all possible class designs |
+| ASan | sometimes | may catch consequences, not the missing virtual destructor rule itself |
+| Compiler warnings | sometimes | depends on warning set and deletion expression visibility |
+| Source review | yes | required to classify the non-virtual case as undefined behavior |

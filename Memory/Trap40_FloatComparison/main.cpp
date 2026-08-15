@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -12,10 +13,12 @@ void exact_equality_fails() {
 }
 
 // Type 2: compare with a tolerance that scales with the magnitude of the operands.
-static bool nearly_equal(double a, double b, double relative = 1e-9) {
+static bool nearly_equal(double a, double b, double relative = 1e-9, double absolute = 1e-12) {
+	if (a == b) { return true; } // Handles equal finite values and same-sign infinities.
+	if (!std::isfinite(a) || !std::isfinite(b)) { return false; }
 	const double diff = std::fabs(a - b);
-	if (diff <= std::numeric_limits<double>::min()) { return true; } // Handles the zero case.
-	return diff <= relative * std::max(std::fabs(a), std::fabs(b));
+	const double scale = std::max(std::fabs(a), std::fabs(b));
+	return diff <= std::max(absolute, relative * scale); // Hybrid absolute/relative tolerance.
 }
 
 void tolerant_comparison() {

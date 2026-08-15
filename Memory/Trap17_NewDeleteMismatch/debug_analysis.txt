@@ -1,0 +1,300 @@
+===============================================================================
+ Trap17_NewDeleteMismatch - CDB debug analysis
+===============================================================================
+
+
+QUESTION
+  if a pointer value is valid, can any deallocation expression release it?
+
+
+SHORT ANSWER
+  no. The deallocator must match the way storage and lifetime were created: new[] with delete[], malloc with free, and placement new with an explicit destructor call but no delete.
+
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+
+main.cpp (47 lines). Three variants run in sequence.
+
+ 6  struct Widget { int value{1}; ~Widget() = default; };
+ 8  // Type 1: new[] paired with scalar delete.
+ 9  void array_form_mismatch() {
+10  #if defined(RUN_UNSAFE_EXAMPLE)
+11      auto* p = new Widget[3];
+12      delete p; // BP: allocation used new[]; deallocation must use delete[].
+13  #else
+14      auto p = std::make_unique<Widget[]>(3); // Owner remembers delete[].
+15      std::cout << "array: " << p[0].value << '\n';
+16  #endif
+17  }
+20  void allocator_family_mismatch() {
+21  #if defined(RUN_UNSAFE_EXAMPLE)
+22      auto* p = static_cast<Widget*>(std::malloc(sizeof(Widget)));
+23      delete p; // BP: malloc storage must be released with free, and was never constructed.
+24  #else
+25      auto p = std::make_unique<Widget>(); // One family: new/delete via the owner.
+26      std::cout << "family: " << p->value << '\n';
+27  #endif
+28  }
+31  void placement_new_mismatch() {
+32      alignas(Widget) unsigned char buffer[sizeof(Widget)];
+33      Widget* p = new (buffer) Widget{}; // BP: no allocation happened; only construction.
+34  #if defined(RUN_UNSAFE_EXAMPLE)
+35      delete p; // BP: frees stack storage that operator new never returned.
+36  #else
+37      std::cout << "placement: " << p->value << '\n';
+38      p->~Widget(); // Destroy explicitly; the buffer is released by its own scope.
+39  #endif
+40  }
+
+  Variant                       Allocation/lifetime event     Correct release
+  array form                    new Widget[3]                 delete[]
+  allocator family              std::malloc only gives raw storage  std::free; construction would require placement new
+  placement new                 constructor runs in caller-owned buffer  p->~Widget(); no deallocation expression
+
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+
+cmake -S . -B build\cdb -DTRAPS_BUILD_UNSAFE=ON -DTRAPS_SANITIZER=none
+cmake --build build\cdb --config Debug --target Trap17_NewDeleteMismatch Trap17_NewDeleteMismatch_unsafe
+
+ASan can catch many deallocation mismatches, but the placement-new case is also a lifetime protocol lesson: construction and destruction must be paired explicitly even when no heap allocation happened.
+
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug ^
+       -srcpath C:\src\cpptraps42\Memory\Trap17_NewDeleteMismatch ^
+       C:\src\cpptraps42\build\cdb\Debug\Trap17_NewDeleteMismatch.exe
+
+Use .symopt-100 and .lines -e first. Without them, local names and source-line breakpoints are unreliable.
+
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:15
+0:000> bp main.cpp:26
+0:000> bp main.cpp:33
+0:000> bp main.cpp:38
+0:000> g
+Breakpoint 0 hit
+Trap17_NewDeleteMismatch!array_form_mismatch+0x27:
+00007ff7582c1747 488d1562a40000  lea     rdx,[Trap17_NewDeleteMismatch!__xt_z+0x110 (00007ff7582cbbb0)]
+0:000> $$ ===== array_form_mismatch: before printing unique_ptr array =====
+0:000> dv /t /v
+0000009db46ff9a8 class std::unique_ptr<Widget [0],std::default_delete<Widget [0]> > p = unique_ptr {...}
+0:000> dqs @@c++(&p) L1
+0000009db46ff9a8  00000210a106aaf0
+0:000> ?? *(Widget*)@@masm(poi(@@c++(&p)))
+struct Widget
+   +0x000 value            : 0n1
+0:000> g
+Breakpoint 1 hit
+Trap17_NewDeleteMismatch!allocator_family_mismatch+0x22:
+00007ff7582c17e2 488d1547a40000  lea     rdx,[Trap17_NewDeleteMismatch!__xt_z+0x190 (00007ff7582cbc30)]
+0:000> $$ ===== allocator_family_mismatch: before printing unique_ptr object =====
+0:000> dv /t /v
+0000009db46ff9a8 class std::unique_ptr<Widget,std::default_delete<Widget> > p = unique_ptr {...}
+0:000> dqs @@c++(&p) L1
+0000009db46ff9a8  00000210a106a3b0
+0:000> ?? *(Widget*)@@masm(poi(@@c++(&p)))
+struct Widget
+   +0x000 value            : 0n1
+0:000> g
+Breakpoint 2 hit
+Trap17_NewDeleteMismatch!placement_new_mismatch+0x17:
+00007ff7582c1867 488d542424      lea     rdx,[rsp+24h]
+0:000> $$ ===== placement_new_mismatch: before placement construction =====
+0:000> dv /t /v
+0000009db46ff994 unsigned char [4] buffer = unsigned char [4] "???"
+0000009db46ff9a8 struct Widget * p = 0xcccccccccccccccc
+0:000> .printf "buffer = %p\n", @@c++(&buffer)
+buffer = 0000009db46ff994
+0:000> db @@c++(&buffer) L8
+0000009db46ff994  cc cc cc cc cc cc cc cc                          ........
+0:000> g
+Breakpoint 3 hit
+Trap17_NewDeleteMismatch!placement_new_mismatch+0x7d:
+00007ff7582c18cd 488bcc          mov     rcx,rsp
+0:000> $$ ===== placement_new_mismatch: explicit destructor about to run =====
+0:000> dv /t /v
+0000009db46ff994 unsigned char [4] buffer = unsigned char [4] "???"
+0000009db46ff9a8 struct Widget * p = 0x0000009db46ff994
+0:000> .printf "buffer = %p, p = %p\n", @@c++(&buffer), @@c++(p)
+buffer = 0000009db46ff994, p = 0000009db46ff994
+0:000> ?? *p
+struct Widget
+   +0x000 value            : 0n1
+0:000> db @@c++(&buffer) L8
+0000009db46ff994  01 00 00 00 cc cc cc cc                          ........
+
+The safe target uses owners that encode the correct family. The array and scalar make_unique stops show constructed Widget objects with value 1; the placement-new stops show stack storage first as uninitialized Debug bytes (0xCC) and then as a constructed Widget whose address equals &buffer. The safe code later calls p->~Widget() rather than delete p.
+
+
+
+-------------------------------------------------------------------------------
+ 5. THE UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+
+The first variant can stop the process, so later variants were captured in separate CDB sessions by stopping in main and setting @rip to the next call. Those debugger-control lines are part of the real transcript.
+
+### Variant 1: new[] then scalar delete
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:12
+0:000> g
+Breakpoint 0 hit
+Trap17_NewDeleteMismatch_unsafe!array_form_mismatch+0x58:
+00007ff694181678 488b442420      mov     rax,qword ptr [rsp+20h] ss:000000f7f9f6f8f0=000002c50a4c9950
+0:000> $$ ===== array_form_mismatch: before scalar delete of new[] allocation =====
+0:000> dv /t /v
+000000f7f9f6f8f0 struct Widget * p = 0x000002c50a4c9950
+0:000> .printf "p = %p\n", @@c++(p)
+p = 000002c50a4c9950
+0:000> ?? p[0]
+struct Widget
+   +0x000 value            : 0n1
+0:000> ?? p[1]
+struct Widget
+   +0x000 value            : 0n1
+0:000> ?? p[2]
+struct Widget
+   +0x000 value            : 0n1
+0:000> db @@c++(p) L18
+000002c50a4c9950  01 00 00 00 01 00 00 00-01 00 00 00 fd fd fd fd  ................
+000002c50a4c9960  ab ab ab ab ab ab ab ab                          ........
+
+### Variant 2: malloc then delete
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:43
+0:000> bp main.cpp:23
+0:000> g
+Breakpoint 0 hit
+Trap17_NewDeleteMismatch_unsafe!main+0x6:
+00007ff694181766 e824fbffff      call    Trap17_NewDeleteMismatch_unsafe!ILT+650(?array_form_mismatchYAXXZ) (00007ff69418128f)
+0:000> $$ ===== skip array variant in this capture =====
+0:000> r @rip = Trap17_NewDeleteMismatch_unsafe!main+0xb
+0:000> g
+Breakpoint 1 hit
+Trap17_NewDeleteMismatch_unsafe!allocator_family_mismatch+0x16:
+00007ff6941816b6 488b442420      mov     rax,qword ptr [rsp+20h] ss:000000e3e3dcfbe0=00000218c72ba400
+0:000> $$ ===== allocator_family_mismatch: before delete of malloc storage =====
+0:000> dv /t /v
+000000e3e3dcfbe0 struct Widget * p = 0x00000218c72ba400
+0:000> .printf "p = %p\n", @@c++(p)
+p = 00000218c72ba400
+0:000> db @@c++(p) L10
+00000218c72ba400  cd cd cd cd fd fd fd fd-ab ab ab ab ab ab ab ab  ................
+0:000> ?? *p
+struct Widget
+   +0x000 value            : 0n-842150451
+
+0xCD is the Debug CRT allocated-but-uninitialized fill byte. No Widget constructor ran for the malloc storage, so reading value only reads diagnostic bytes.
+
+### Variant 3: placement new then delete
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp main.cpp:43
+0:000> bp main.cpp:35
+0:000> g
+Breakpoint 0 hit
+Trap17_NewDeleteMismatch_unsafe!main+0x6:
+00007ff694181766 e824fbffff      call    Trap17_NewDeleteMismatch_unsafe!ILT+650(?array_form_mismatchYAXXZ) (00007ff69418128f)
+0:000> $$ ===== skip earlier variants in this capture =====
+0:000> r @rip = Trap17_NewDeleteMismatch_unsafe!main+0x10
+0:000> g
+Breakpoint 1 hit
+Trap17_NewDeleteMismatch_unsafe!placement_new_mismatch+0x40:
+00007ff694181720 488b442438      mov     rax,qword ptr [rsp+38h] ss:000000aedad4f848=000000aedad4f834
+0:000> $$ ===== placement_new_mismatch: before delete of stack buffer =====
+0:000> dv /t /v
+000000aedad4f834 unsigned char [4] buffer = unsigned char [4] "???"
+000000aedad4f848 struct Widget * p = 0x000000aedad4f834
+0:000> .printf "buffer = %p, p = %p\n", @@c++(&buffer), @@c++(p)
+buffer = 000000aedad4f834, p = 000000aedad4f834
+0:000> ?? *p
+struct Widget
+   +0x000 value            : 0n1
+0:000> db @@c++(&buffer) L8
+000000aedad4f834  01 00 00 00 cc cc cc cc                          ........
+
+Here p equals the stack buffer address. That is correct for placement new; it is exactly why delete p would be wrong.
+
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+
+  Variant                       Evidence captured             Why the unsafe deallocator is wrong
+  array                         three adjacent Widget values at p  scalar delete does not match new[]
+  family                        malloc block contains 0xCD and no constructed Widget  delete expects a new-created object
+  placement                     p == &buffer on the stack     delete may only deallocate storage returned by operator new
+
+Debug fill bytes are a Debug CRT courtesy, not a language guarantee: 0xCD is allocated but uninitialized, 0xFD is a guard band, 0xDD is a freed CRT block, and 0xFEEEFEEE is freed Win32 heap memory. Release builds need not write any of them.
+
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+
+  Command                       Purpose
+  .symopt-100 / .lines -e       make locals and line breakpoints work
+   bp main.cpp:12               stop before the mismatched array deallocator
+  r @rip = module!main+offset   skip an earlier crashing variant for a separate capture
+  dv /t /v                      list local variables
+  .printf "%p"                  print addresses without relying on display formatting
+  db address L10                inspect raw storage bytes
+  ?? p[0] / ?? *p               evaluate C++ objects at a pointer
+
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+
+1. Let the array mismatch continue under the unsafe target. Does the Debug CRT stop immediately or later on your machine?
+2. Replace malloc with operator new(sizeof(Widget)) but still omit construction. What evidence changes?
+3. Add p->~Widget() before the unsafe placement delete p. Which part is fixed, and which part remains wrong?
+4. Run the ASan unsafe build and compare which mismatches it reports by name.
+5. Add a non-trivial destructor to Widget. How does that change the consequences of scalar delete on an array?
+
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+
+  Tool                          Reports this trap             Limitation
+  CDB                           yes, by showing addresses, bytes, and object state  does not enforce the allocation family contract automatically
+  AddressSanitizer              often yes                     may not prove every placement-new lifetime protocol is correct
+  Compiler warnings             partial                       cannot generally know runtime allocation families
+  Debug CRT fills               useful hints                  Debug-only; not a portable semantic guarantee

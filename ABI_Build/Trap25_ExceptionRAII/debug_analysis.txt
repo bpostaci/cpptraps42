@@ -1,0 +1,156 @@
+===============================================================================
+ Trap25_ExceptionRAII - CDB debug analysis
+===============================================================================
+
+QUESTION
+  does an exception skip cleanup?
+
+SHORT ANSWER
+  it skips ordinary statements after the throw, but it does not skip destructors for fully constructed automatic objects. RAII is the cleanup mechanism.
+
+
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+Directory contents: main.cpp.
+
+ 1  #include <iostream>
+ 2  #include <mutex>
+ 3  #include <stdexcept>
+ 4  int main(){ std::mutex m; try { std::scoped_lock lock(m); // BP: resource tied to scope.
+ 5          throw std::runtime_error("failure"); // Destructor unlocks during unwinding.
+ 6      } catch(...) { std::cout<<"recovered and unlocked\n"; } }
+
+  Entity  |  Role
+  std::mutex m  |  resource
+  std::scoped_lock lock(m)  |  RAII owner
+  line 5 throw  |  non-local exit
+  catch(...)  |  execution resumes after unwinding
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+cmake --build build\cdb --config Debug --target Trap25_ExceptionRAII
+
+A sanitizer is not useful here. The evidence is call stack order during C++ exception unwinding.
+
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+cdb -o -y C:\src\cpptraps42\build\cdb\Debug -srcpath C:\src\cpptraps42\ABI_Build\Trap25_ExceptionRAII C:\src\cpptraps42\build\cdb\Debug\Trap25_ExceptionRAII.exe
+
+Enable .symopt-100 and .lines -e before setting breakpoints.
+
+
+-------------------------------------------------------------------------------
+ 4. THE SAFE TARGET
+-------------------------------------------------------------------------------
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bm Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::scoped_lock<std::mutex>
+  0: 00007ff634651c30 @!"Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::scoped_lock<std::mutex>"
+0:000> bm Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::~scoped_lock<std::mutex>
+  1: 00007ff634652110 @!"Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::~scoped_lock<std::mutex>"
+0:000> bm Trap25_ExceptionRAII!std::_Mutex_base::unlock
+  2: 00007ff6346524d0 @!"Trap25_ExceptionRAII!std::_Mutex_base::unlock"
+0:000> bp main.cpp:5
+0:000> g
+Breakpoint 0 hit
+Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::scoped_lock<std::mutex>:
+00007ff634651c30 4889542410      mov     qword ptr [rsp+10h],rdx ss:00000068b8f6f908=0000000000000000
+0:000> k
+Child-SP          RetAddr               Call Site
+00000068b8f6f8f8 00007ff634651667     Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::scoped_lock<std::mutex> [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\mutex @ 478]
+00000068b8f6f900 00007ff634652cd9     Trap25_ExceptionRAII!main+0x37 [C:\src\cpptraps42\ABI_Build\Trap25_ExceptionRAII\main.cpp @ 4]
+0:000> g
+Breakpoint 3 hit
+Trap25_ExceptionRAII!main+0x3f:
+00007ff63465166f 488d1512960000  lea     rdx,[Trap25_ExceptionRAII!__xt_z+0x1e8 (00007ff63465ac88)]
+0:000> dv /t /v
+00000068b8f6f998 class std::scoped_lock<std::mutex> lock = (locked)
+00000068b8f6f930 class std::mutex m = locked
+0:000> g
+(6e48.7fd8): C++ EH exception - code e06d7363 (first chance)
+Breakpoint 1 hit
+Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::~scoped_lock<std::mutex>:
+00007ff634652110 48894c2408      mov     qword ptr [rsp+8],rcx ss:00000068b8f6d8e0=00000068b8f6d990
+0:000> k
+Child-SP          RetAddr               Call Site
+00000068b8f6d8d8 00007ff63465898f     Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::~scoped_lock<std::mutex> [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\mutex @ 485]
+00000068b8f6d8e0 00007ffc91086750     Trap25_ExceptionRAII!main$dtor$0+0x1f
+00000068b8f6d920 00007ffc910840f9     VCRUNTIME140_1D!_CxxFrameHandler4+0x2b0
+00000068b8f6f870 00007ff634651698     VCRUNTIME140D!CxxThrowException+0x132
+00000068b8f6f900 00007ff634652cd9     Trap25_ExceptionRAII!main+0x68 [C:\src\cpptraps42\ABI_Build\Trap25_ExceptionRAII\main.cpp @ 5]
+0:000> g
+Breakpoint 2 hit
+Trap25_ExceptionRAII!std::_Mutex_base::unlock:
+00007ff6346524d0 48894c2408      mov     qword ptr [rsp+8],rcx ss:00000068b8f6d8b0=ffffffff00008970
+0:000> k
+Child-SP          RetAddr               Call Site
+00000068b8f6d8a8 00007ff634652127     Trap25_ExceptionRAII!std::_Mutex_base::unlock [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\mutex @ 70]
+00000068b8f6d8b0 00007ff63465898f     Trap25_ExceptionRAII!std::scoped_lock<std::mutex>::~scoped_lock<std::mutex>+0x17 [C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\include\mutex @ 486]
+00000068b8f6d8e0 00007ffc91086750     Trap25_ExceptionRAII!main$dtor$0+0x1f
+0:000> g
+recovered and unlocked
+ntdll!NtTerminateProcess+0x14:
+00007ffca0500904 c3              ret
+
+The destructor runs inside the exception handler path, then calls unlock. A raw m.unlock() statement after line 5 would not run.
+
+
+-------------------------------------------------------------------------------
+ 5. WHY THERE IS NO UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+There is no Trap25_ExceptionRAII_unsafe.exe. The source has no RUN_UNSAFE_EXAMPLE branch. The anti-pattern would be manual lock(); throw; unlock();, where the cleanup statement is skipped.
+
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+  Measurement  |  Evidence  |  Meaning
+  before throw  |  lock = (locked)  |  resource is held
+  exception  |  C++ EH exception  |  unwinding begins
+  destructor  |  ~scoped_lock` under `_CxxFrameHandler4  |  RAII cleanup runs
+  unlock  |  unlock` called by destructor  |  resource is released
+
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+  Command  |  Purpose
+  bm ...scoped_lock...  |  break in constructor/destructor
+   bp `main.cpp:5`   |  stop before throw
+  dv /t /v  |  inspect locals
+  k  |  show unwinding and cleanup stack
+
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+1. Replace RAII with manual lock/unlock and watch which cleanup is skipped.
+2. Add another RAII object and record destructor order.
+3. Throw before constructing lock; which destructor disappears?
+4. Catch std::exception const& and inspect the exception type.
+5. Step into scoped_lock and find the actual mutex lock call.
+
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+  Tool  |  Reports this trap  |  Limitation
+  CDB  |  destructor order  |  one execution path only
+  Sanitizers  |  no  |  exception safety is design-level
+  Compiler  |  no  |  manual cleanup is well-formed
+  Tests  |  partial  |  must exercise throwing paths

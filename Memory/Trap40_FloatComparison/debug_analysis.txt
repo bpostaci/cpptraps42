@@ -1,0 +1,247 @@
+===============================================================================
+ Trap40_FloatComparison - CDB debug analysis 
+===============================================================================
+
+QUESTION
+  Why can values that print as simple decimals fail equality tests?
+
+SHORT ANSWER
+  The stored IEEE-754 values are not the rounded decimal display. This is defined floating-point arithmetic, not a sanitizer-detectable fault.
+
+-------------------------------------------------------------------------------
+ 1. READ THE SOURCE FIRST
+-------------------------------------------------------------------------------
+
+main.cpp (numbered). The BP: comments mark the intended stops.
+
+   1  #include <algorithm>
+   2  #include <cmath>
+   3  #include <iomanip>
+   4  #include <iostream>
+   5  #include <limits>
+   6  
+   7  // Type 1: decimal literals are not representable in binary, so exact equality fails.
+   8  void exact_equality_fails() {
+   9  	const double sum = 0.1 + 0.2;
+  10  	std::cout << std::setprecision(20) << "0.1+0.2 = " << sum << '\n';
+  11  	std::cout << "sum == 0.3 : " << std::boolalpha << (sum == 0.3) << '\n'; // BP: false.
+  12  	std::cout << "difference : " << std::setprecision(6) << (sum - 0.3) << '\n';
+  13  }
+  14  
+  15  // Type 2: compare with a tolerance that scales with the magnitude of the operands.
+  16  static bool nearly_equal(double a, double b, double relative = 1e-9, double absolute = 1e-12) {
+  17  	if (a == b) { return true; } // Handles equal finite values and same-sign infinities.
+  18  	if (!std::isfinite(a) || !std::isfinite(b)) { return false; }
+  19  	const double diff = std::fabs(a - b);
+  20  	const double scale = std::max(std::fabs(a), std::fabs(b));
+  21  	return diff <= std::max(absolute, relative * scale); // Hybrid absolute/relative tolerance.
+  22  }
+  23  
+  24  void tolerant_comparison() {
+  25  	std::cout << "nearly_equal(0.1+0.2, 0.3) : " << std::boolalpha
+  26  			  << nearly_equal(0.1 + 0.2, 0.3) << '\n';
+  27  	std::cout << "nearly_equal(1e9+1, 1e9)   : "
+  28  			  << nearly_equal(1e9 + 1.0, 1e9) << '\n'; // Absolute epsilon alone would be wrong here.
+  29  }
+  30  
+  31  // Type 3: accumulation and non-finite values break loop conditions built on equality.
+  32  void accumulation_and_nan() {
+  33  	double running = 0.0;
+  34  	for (int i = 0; i < 10; ++i) { running += 0.1; } // Error compounds every iteration.
+  35  	std::cout << "sum of ten 0.1 == 1.0 : " << std::boolalpha << (running == 1.0) << '\n';
+  36  
+  37  	for (int i = 0; i < 10; ++i) {         // Integer loop counter: exact, terminates predictably.
+  38  		const double step = i * 0.1;
+  39  		(void)step;
+  40  	}
+  41  
+  42  	const double nan_value = std::nan("");
+  43  	std::cout << "nan == nan : " << (nan_value == nan_value)             // BP: always false.
+  44  			  << "  isnan    : " << std::isnan(nan_value) << '\n';       // The correct test.
+  45  }
+  46  
+  47  int main() {
+  48  	exact_equality_fails();
+  49  	tolerant_comparison();
+  50  	accumulation_and_nan();
+  51  }
+
+  NAME          ROLE                INVARIANT TO CHECK                                 
+  sum           double              stored bits, not rounded text, decide equality     
+  nearly_equal  hybrid tolerance    absolute and relative scales must fit the magnitude
+  running       accumulated double  repeated rounding moves it away from 1.0           
+  nan_value     quiet NaN           NaN is unordered and compares unequal to itself    
+
+-------------------------------------------------------------------------------
+ 2. BUILD WITHOUT A SANITIZER
+-------------------------------------------------------------------------------
+
+No build, clean, or rebuild was run for this document. The existing Debug executable was used:
+
+  C:\src\cpptraps42\build\cdb\Debug\Trap40_FloatComparison.exe
+
+A sanitizer would add nothing. The floating-point operations are defined, and MSVC's AddressSanitizer is unrelated to numeric expectations.
+
+-------------------------------------------------------------------------------
+ 3. START CDB
+-------------------------------------------------------------------------------
+
+  cdb -o -y C:\src\cpptraps42\build\cdb\Debug
+       -srcpath C:\src\cpptraps42\Memory\Trap40_FloatComparison
+       C:\src\cpptraps42\build\cdb\Debug\Trap40_FloatComparison.exe
+
+Required settings:
+
+  .symopt-100
+  .lines -e
+
+-------------------------------------------------------------------------------
+ 4. TRANSCRIPT: ONE DEFINED-BEHAVIOUR TARGET
+-------------------------------------------------------------------------------
+
+Command output below is copied from real CDB runs. Addresses are from one run and are not stable across runs.
+
+ALL VARIANTS
+
+  0:000> .symopt-100
+  0:000> .lines -e
+  0:000> bp `main.cpp:11`
+  0:000> bp `main.cpp:21`
+  0:000> bp Trap40_FloatComparison!accumulation_and_nan+0x43
+  0:000> bp Trap40_FloatComparison!accumulation_and_nan+0xef
+  0:000> g
+  Breakpoint 0 hit
+  Trap40_FloatComparison!exact_equality_fails+0x78:
+  00007ff7`efd61648 488d1571a50000  lea     rdx,[Trap40_FloatComparison!__xt_z+0x120 (00007ff7`efd6bbc0)]
+  0:000> $$ ===== VARIANT 1: stored sum and comparison constants =====
+  0:000> dv /t /v
+  000000bc`9caff880 double sum = 0.30000000000000004441
+  0:000> ?? sum
+  double 0.30000000000000004441
+  0:000> dq @@c++(&sum) L1
+  000000bc`9caff880  3fd33333`33333334
+  0:000> dq 00007ff7`efd6c0d8 L2
+  00007ff7`efd6c0d8  3fd33333`33333333 00000000`00000000
+  0:000> u Trap40_FloatComparison!exact_equality_fails+0xa7 L5
+  Trap40_FloatComparison!exact_equality_fails+0xa7 [C:\src\cpptraps42\Memory\Trap40_FloatComparison\main.cpp @ 11]:
+  00007ff7`efd61677 33d2            xor     edx,edx
+  00007ff7`efd61679 488b4c2468      mov     rcx,qword ptr [rsp+68h]
+  00007ff7`efd6167e ff159cfa0000    call    qword ptr [Trap40_FloatComparison!_imp_??6?$basic_ostreamDU?$char_traitsDstdstdQEAAAEAV01_NZ (00007ff7`efd71120)]
+  0:000> g
+  Breakpoint 1 hit
+  Trap40_FloatComparison!nearly_equal+0xb1:
+  00007ff7`efd617c1 f20f10442470    movsd   xmm0,mmword ptr [rsp+70h] ss:000000bc`9caff8b0=3e112e0be826d695
+  0:000> $$ ===== VARIANT 2: first nearly_equal return =====
+  0:000> dv /t /v
+  000000bc`9caff8a0 double a = 0.30000000000000004441
+  000000bc`9caff8a8 double b = 0.2999999999999999889
+  000000bc`9caff8b0 double relative = 1.0000000000000000623e-009
+  000000bc`9caff8b8 double absolute = 9.9999999999999997989e-013
+  000000bc`9caff860 double diff = 5.5511151231257827021e-017
+  000000bc`9caff868 double scale = 0.30000000000000004441
+  0:000> ?? diff
+  double 5.5511151231257827021e-017
+  0:000> ?? relative * scale
+  double 3.000000000000000497e-010
+  0:000> g
+  Breakpoint 1 hit
+  Trap40_FloatComparison!nearly_equal+0xb1:
+  00007ff7`efd617c1 f20f10442470    movsd   xmm0,mmword ptr [rsp+70h] ss:000000bc`9caff8b0=3e112e0be826d695
+  0:000> $$ ===== VARIANT 2: second nearly_equal return =====
+  0:000> dv /t /v
+  000000bc`9caff8a0 double a = 1000000001
+  000000bc`9caff8a8 double b = 1000000000
+  000000bc`9caff860 double diff = 1
+  000000bc`9caff868 double scale = 1000000001
+  0:000> ?? relative * scale
+  double 1.0000000010000000827
+  0:000> g
+  Breakpoint 2 hit
+  Trap40_FloatComparison!accumulation_and_nan+0x43:
+  00007ff7`efd61943 488d15d6a20000  lea     rdx,[Trap40_FloatComparison!__xt_z+0x180 (00007ff7`efd6bc20)]
+  0:000> $$ ===== VARIANT 3: after accumulating ten tenths =====
+  0:000> dv /t /v
+  000000bc`9caff880 double running = 0.99999999999999988898
+  0:000> ?? running
+  double 0.99999999999999988898
+  0:000> dq @@c++(&running) L1
+  000000bc`9caff880  3fefffff`ffffffff
+  0:000> dq 00007ff7`efd6c0f8 L1
+  00007ff7`efd6c0f8  3ff00000`00000000
+  0:000> g
+  Breakpoint 3 hit
+  Trap40_FloatComparison!accumulation_and_nan+0xef:
+  00007ff7`efd619ef 488b052af70000  mov     rax,qword ptr [Trap40_FloatComparison!_imp_??6?$basic_ostreamDU?$char_traitsDstdstdQEAAAEAV01_NZ (00007ff7`efd71120)] ds:00007ff7`efd71120={MSVCP140D!std::basic_ostream<char,std::char_traits<char> >::operator<< (00007ffc`477dce20)}
+  0:000> $$ ===== VARIANT 3: NaN compares unequal to itself =====
+  0:000> dv /t /v
+  000000bc`9caff898 double nan_value = 1.#QNAN
+  0:000> ?? nan_value
+  double 1.#QNAN
+  0:000> ?? (nan_value == nan_value)
+  bool false
+  0:000> dq @@c++(&nan_value) L1
+  000000bc`9caff898  7ff80000`00000000
+  0:000> g
+  0.1+0.2 = 0.30000000000000004441
+  sum == 0.3 : false
+  difference : 5.55112e-17
+  nearly_equal(0.1+0.2, 0.3) : true
+  nearly_equal(1e9+1, 1e9)   : true
+  sum of ten 0.1 == 1.0 : false
+  nan == nan : false  isnan    : true
+
+-------------------------------------------------------------------------------
+ 5. WHY THERE IS NO _UNSAFE TARGET
+-------------------------------------------------------------------------------
+
+There is no `_unsafe` executable because exact floating-point equality, tolerance checks, accumulation error, and NaN comparison are all defined behaviour. Wrong means the comparison encoded the wrong numerical invariant. The debugger is useful because it exposes the stored bits and the high-precision values.
+
+-------------------------------------------------------------------------------
+ 6. WHAT THE MEASUREMENTS PROVE
+-------------------------------------------------------------------------------
+
+  VARIANT           MEASUREMENT             OBSERVED                               MEANING                                     
+  exact equality    sum bits vs 0.3 bits    3fd3333333333334 vs 3fd3333333333333   adjacent representable doubles are not equal
+  scaled tolerance  diff vs relative*scale  5.55e-17 <= 3.0e-10; 1 <= 1.000000001  relative tolerance matches magnitude        
+  accumulation      ten tenths              0.99999999999999988898                 loop equality against 1.0 is brittle        
+  NaN               nan == nan              false                                  use `isnan`, not equality                   
+
+The program is not corrupt. The raw bits and high-precision values show exactly why the printed rounded form is an insufficient invariant.
+
+-------------------------------------------------------------------------------
+ 7. COMMAND REFERENCE USED HERE
+-------------------------------------------------------------------------------
+
+  COMMAND      PURPOSE                                         
+  .symopt-100  resolve unqualified C++ symbols                 
+  .lines -e    enable source-line information                  
+  bp           set a source, function, or offset breakpoint    
+  g            run to the next breakpoint                      
+  dv /t /v     show local variables with types                 
+  ?? expr      evaluate a C++ expression                       
+  dx           display C++ objects through debugger visualizers
+  dt           display a type or local object's fields         
+  dq           dump the raw 64-bit IEEE-754 representation     
+  u            show the generated comparison result path       
+
+-------------------------------------------------------------------------------
+ 8. LEFT TO YOU
+-------------------------------------------------------------------------------
+
+  1. Change the tolerance to an absolute-only epsilon and rerun the two `nearly_equal` stops. Which call changes result first?
+  2. Dump the constants for 0.1 and 0.2 and identify their IEEE-754 encodings.
+  3. Break inside the accumulation loop and record `running` after each addition.
+  4. Replace NaN with infinity and compare `a == a`, `isfinite`, and `isnan`.
+
+-------------------------------------------------------------------------------
+ 9. TOOL LIMITS
+-------------------------------------------------------------------------------
+
+  TOOL                    REPORTS THIS TRAP         LIMITATION                                                                          
+  CDB                     yes, as state inspection  It shows the state change; it does not know the programmer's invariant.             
+  AddressSanitizer        no                        MSVC ASan diagnoses memory safety errors, not defined container/API semantics.      
+  UBSan                   no                        There is no undefined operation here to diagnose.                                   
+  TSan                    no                        No data race is involved.                                                           
+  Assertions/code review  yes                       The useful check is the intended invariant: size, type, tolerance, or signed domain.
+
+===============================================================================

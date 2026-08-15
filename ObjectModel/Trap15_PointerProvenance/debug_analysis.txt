@@ -1,0 +1,181 @@
+===============================================================================
+ Trap15_PointerProvenance - CDB debug analysis
+===============================================================================
+
+QUESTION
+  if two pointers have the same numeric value, may both be used to read the object?
+
+
+SHORT ANSWER
+  no. Numeric equality is not lifetime, ownership, or provenance. CDB can show that bytes agree or look plausible; the C++ abstract machine still decides whether the access is valid.
+
+-------------------------------------------------------------------------------
+
+1. Read the source first
+
+
+ 1  #include <cstdint>
+ 2  #include <iostream>
+ 3  #include <memory>
+ 4  int main() {
+ 5      auto owner = std::make_unique<int>(42);
+ 6      int* original = owner.get();
+ 7  #if defined(RUN_UNSAFE_EXAMPLE)
+ 8      const auto address = reinterpret_cast<std::uintptr_t>(original);
+ 9      int* reconstructed = reinterpret_cast<int*>(address);
+10      owner.reset();
+11      std::cout << *reconstructed << '\n'; // BP
+12  #else
+13      int* observer = original;
+14      std::cout << *observer << '\n'; // BP
+15  #endif
+16  }
+
+
+   Entity    Meaning   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   `owner`    owns the `int` lifetime   
+   `original`    pointer obtained while the object is live   
+   `address`    integer copy of the pointer value   
+   `reconstructed`    pointer recreated from the integer   
+
+-------------------------------------------------------------------------------
+
+2. Build without a sanitizer
+
+Use the existing Debug executables in `build\cdb\Debug`. ASan can diagnose this use-after-free variant, but it is not a general provenance model. The non-sanitized run lets the Debug CRT fill bytes remain visible.
+
+-------------------------------------------------------------------------------
+
+3. Start CDB
+
+Use `-y C:\src\cpptraps42\build\cdb\Debug` and `-srcpath C:\src\cpptraps42\ObjectModel\Trap15_PointerProvenance`. The script begins with `.symopt-100` and `.lines -e` so locals and line breakpoints work.
+
+-------------------------------------------------------------------------------
+
+4. The safe target
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:17`
+0:000> g
+Breakpoint 0 hit
+Trap15_PointerProvenance!main+0x48:
+00007ff6`817416b8 488b442440      mov     rax,qword ptr [rsp+40h] ss:00000015`d7affc10=000001e4f53e1390
+0:000> $$ SAFE stop at valid observer read
+0:000>  dv /t /v
+00000015`d7affbf8 class std::unique_ptr<int,std::default_delete<int> > owner = unique_ptr 42
+00000015`d7affc08 int * original = 0x000001e4`f53e1390
+00000015`d7affc10 int * observer = 0x000001e4`f53e1390
+0:000> ?? (void*)original
+void * 0x000001e4`f53e1390
+0:000> ?? (void*)observer
+void * 0x000001e4`f53e1390
+0:000> ?? *observer
+int 0n42
+0:000> db @@c++(observer) L10
+000001e4`f53e1390  2a 00 00 00 fd fd fd fd-ab ab ab ab ab ab ab ab  *...............
+0:000> dqs @@c++(&owner) L1
+00000015`d7affbf8  000001e4`f53e1390
+0:000> g
+42
+
+
+The raw observer and the owner both still refer to the live allocation.
+
+-------------------------------------------------------------------------------
+
+5. The unsafe target
+
+
+0:000> .symopt-100
+0:000> .lines -e
+0:000> bp `main.cpp:12`
+0:000> bp `main.cpp:13`
+0:000> g
+Breakpoint 0 hit
+Trap15_PointerProvenance_unsafe!main+0x52:
+00007ff6`040616e2 33d2            xor     edx,edx
+0:000> $$ STOP 1: before owner.reset()
+0:000> dv /t /v
+0000003b`880ff6c8 int * reconstructed = 0x000001b1`b9e4ac30
+0000003b`880ff6a8 class std::unique_ptr<int,std::default_delete<int> > owner = unique_ptr 42
+0000003b`880ff6b8 int * original = 0x000001b1`b9e4ac30
+0000003b`880ff6c0 unsigned int64 address = 0x000001b1`b9e4ac30
+0:000> ?? (void*)original
+void * 0x000001b1`b9e4ac30
+0:000> ?? (void*)reconstructed
+void * 0x000001b1`b9e4ac30
+0:000> ?? *original
+int 0n42
+0:000> db @@c++(original) L10
+000001b1`b9e4ac30  2a 00 00 00 fd fd fd fd-ab ab ab ab ab ab ab ab  *...............
+0:000> dqs @@c++(&owner) L1
+0000003b`880ff6a8  000001b1`b9e4ac30
+0:000> g
+Breakpoint 1 hit
+Trap15_PointerProvenance_unsafe!main+0x5e:
+00007ff6`040616ee 488b442448      mov     rax,qword ptr [rsp+48h] ss:0000003b`880ff6c8=000001b1b9e4ac30
+0:000> $$ STOP 2: after owner.reset(), before reconstructed dereference
+0:000> dv /t /v
+0000003b`880ff6c8 int * reconstructed = 0x000001b1`b9e4ac30
+0000003b`880ff6a8 class std::unique_ptr<int,std::default_delete<int> > owner = empty
+0000003b`880ff6b8 int * original = 0x000001b1`b9e4ac30
+0000003b`880ff6c0 unsigned int64 address = 0x000001b1`b9e4ac30
+0:000> dqs @@c++(&owner) L1
+0000003b`880ff6a8  00000000`00000000
+0:000> db @@c++(reconstructed) L10
+000001b1`b9e4ac30  ee fe ee fe ee fe ee fe-ee fe ee fe ee fe ee fe  ................
+0:000> ?? *reconstructed
+int 0n-17891602
+0:000> g
+-17891602
+
+
+-------------------------------------------------------------------------------
+
+6. What the measurements prove
+
+   Measurement    Before `reset()`    After `reset()`   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   `original`    `1b1b9e4ac30`    `1b1b9e4ac30`   
+   `reconstructed`    `1b1b9e4ac30`    `1b1b9e4ac30`   
+   raw pointer inside `owner`    `1b1b9e4ac30`    `00000000`   
+   bytes at address    `2a 00 00 00 ...`    `ee fe ee fe ...`   
+   read result    `42` while live    `-17891602` after lifetime ended   
+
+The divergence is between numeric equality and lifetime/provenance. The debugger can show the same address; it cannot grant permission to dereference it.
+
+-------------------------------------------------------------------------------
+
+7. Command reference used here
+
+   Command    Why type it   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   `?? (void*)p`    compare numeric pointer values   
+   `db @@c++(p) L10`    inspect bytes at the address   
+   `dqs @@c++(&owner) L1`    inspect the raw pointer inside `unique_ptr`   
+   `dv /t /v`    compare locals at the same stop   
+   `bp main.cpp:12` / `bp main.cpp:13`    bracket the lifetime-ending event   
+
+-------------------------------------------------------------------------------
+
+8. Left to you
+
+1. Run the unsafe target twice. Which digits change because of ASLR, and which relationships stay the same?
+2. Build with ASan. Which evidence disappears because the allocator changes?
+3. Remove `owner.reset()` in a scratch copy. What remains questionable about integer reconstruction?
+4. Pass the integer through a file or IPC boundary. What proof would a real API need before using it as a pointer?
+
+-------------------------------------------------------------------------------
+
+9. Tool limits
+
+   Tool    Reports this trap    Limitation   
+  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  -------------------------------------------------------------------------------  
+   CDB    shows numeric equality and heap bytes    not a provenance oracle   
+   Debug CRT fills    show lifetime ended here    Debug-only courtesy   
+   AddressSanitizer    catches the use-after-free variant    not a general provenance checker   
+   MSVC warnings    no    the cast syntax is well formed   
+
