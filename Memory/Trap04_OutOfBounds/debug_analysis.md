@@ -1,5 +1,15 @@
 # Trap04_OutOfBounds - CDB debug analysis
 
+Overview of Out-of-Bounds (OOB) Access
+Out-of-bounds memory access occurs when C++ code reads from or writes to a memory address outside the allocated boundary of an array, vector, or heap buffer.
+
+Undefined Behavior (UB): Reading or writing past the boundary does not guarantee an immediate crash. It may overwrite adjacent stack/heap variables, corrupt data, or execute silently until later failure.
+
+Stack Off-by-One: Writing past the end of a stack array can overwrite adjacent local variables or frame metadata (like saved instruction/frame pointers).
+
+Heap Off-by-One: Writing past a new[] or malloc() chunk corrupts heap allocator metadata (e.g., chunk headers), causing segfaults inside subsequent calls to malloc or free.
+
+
 **Question:** if `data()+index` can be formed, may the program read through it?
 
 **Short answer:** no. One-past-the-end is a valid sentinel address, not an element. The debugger session separates address arithmetic from dereference permission.
