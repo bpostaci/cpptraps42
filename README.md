@@ -16,7 +16,7 @@ Traps 01-30 form the original canonical set. Traps 31-42 extend it with the ever
 
 ## Human-AI collaboration
 
-This guide was written by **Buğra Postacı** with the assistance of several AI systems, including **OpenAI Codex, Claude, Fable, and MAI**. The division of labour is worth stating plainly: the engineering judgement is human, the drafting volume is not.
+This guide was written by **Buğra Postacı** with the assistance of several AI systems, including **OpenAI Codex, Claude, GitHub Copilot, and MAI**. The division of labour is worth stating plainly: the engineering judgement is human, the drafting volume is not.
 
 Buğra set the goals, decided which mistakes earn a place among the 42, chose how each one should be taught, directed every iteration, reviewed the output, and is accountable for what is published here. The AI systems assisted with prose drafting, code scaffolding, documentation, build automation, consistency checks across 42 folders, review suggestions, and PDF layout.
 
