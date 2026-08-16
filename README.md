@@ -16,7 +16,11 @@ Traps 01-30 form the original canonical set. Traps 31-42 extend it with the ever
 
 ## Human-AI collaboration
 
-This project was created through collaboration between **Bugra Postaci** and multiple AI systems, including **OpenAI Codex, Claude, Fable, and MAI**. Bugra defined the goals, selected the scope, directed the iterations, reviewed the outputs, and retains responsibility for the final publication. The AI systems assisted across drafting, code scaffolding, documentation, build automation, consistency checks, review suggestions, and PDF layout. AI assistance does not replace independent technical review; corrections and reproducible issue reports are welcome.
+This guide was written by **Buğra Postacı** with the assistance of several AI systems, including **OpenAI Codex, Claude, Fable, and MAI**. The division of labour is worth stating plainly: the engineering judgement is human, the drafting volume is not.
+
+Buğra set the goals, decided which mistakes earn a place among the 42, chose how each one should be taught, directed every iteration, reviewed the output, and is accountable for what is published here. The AI systems assisted with prose drafting, code scaffolding, documentation, build automation, consistency checks across 42 folders, review suggestions, and PDF layout.
+
+Nothing here rests on an AI's word alone. Every target builds and runs, and every debugger session is meant to be reproducible on your own machine — that is the point of the format. But AI assistance is not a substitute for independent technical review. If something is wrong, a reproducible issue report is the most useful thing you can send.
 
 ## Visual Studio
 
