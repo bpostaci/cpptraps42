@@ -10,7 +10,8 @@ This is not only a collection of C++ mistakes or corrected code. Every trap conn
 **Publication date:** 15 August 2026  
 **Author:** Buğra POSTACI · Software Engineer · Debugging Specialist  
 **Repository:** https://github.com/bpostaci/cpptraps42  
-**Visual book:** [Download the 42 C++ TRAPS Visual Edition PDF](docs/42_CPP_TRAPS_Visual_Edition.pdf)
+**Visual book - master quality (77 MB):** [42 C++ TRAPS Visual Edition](docs/42_CPP_TRAPS_Visual_Edition.pdf)  
+**Visual book - LinkedIn optimized (24 MB):** [42 C++ TRAPS Visual LinkedIn Edition](docs/42_CPP_TRAPS_Visual_LinkedIn_Edition.pdf)
 
 Traps 01-30 form the original canonical set. Traps 31-42 extend it with the everyday standard-library, class-design, and parsing mistakes that practising C++ engineers report most often.
 
