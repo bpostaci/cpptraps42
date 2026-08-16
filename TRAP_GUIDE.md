@@ -2,6 +2,7 @@
 
 Every trap directory represents one canonical book topic; selected directories contain several named variants of that topic, and advanced build traps may contain multiple translation units. Comments explain the questionable operation beside the relevant statement and identify the corrective pattern. When a source contains a guarded `RUN_UNSAFE_EXAMPLE` branch, CMake creates a separately named `_unsafe` target. Traps without such a branch have only their normal target. `_unsafe` is a teaching label: a branch can be undefined behavior, a lifetime violation, an unspecified-but-valid state, or defined yet dangerous logic.
 
+This page is the index. Each row summarises one trap in a single line; the `README.md` inside that trap's folder expands the same trap into the full rule, the corrective pattern, and the tools that do and do not detect it.
 | Trap | Category | Typical symptom | Why it fails | Detection | Correct direction |
 |---:|---|---|---|---|---|
 | 01 | Memory | delayed crash/corruption | access after dynamic lifetime | ASan | RAII ownership |
